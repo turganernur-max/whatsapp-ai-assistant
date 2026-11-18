@@ -1,0 +1,40 @@
+# Render Blueprint: Render → New → Blueprint → выберите этот репозиторий.
+services:
+  - type: web
+    name: whatsapp-ai-assistant
+    runtime: node
+    plan: free            # для надёжной работы 24/7 можно сменить на starter (платно, только с вашего согласия)
+    region: frankfurt
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: node dist/src/index.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: WEBHOOK_VERIFY_TOKEN
+        generateValue: true
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: PUBLIC_URL
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_BUSINESS_ACCOUNT_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: STT_API_KEY
+        sync: false
+      - key: NTFY_TOPIC
+        sync: false

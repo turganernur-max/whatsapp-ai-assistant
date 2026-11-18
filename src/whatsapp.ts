@@ -1,0 +1,282 @@
+import crypto from "node:crypto";
+import { config } from "./config.js";
+
+export class WhatsAppError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+    public code?: number,
+    public retryable = false,
+  ) {
+    super(message);
+  }
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function graphUrl(p: string) {
+  return `${config.graphBase}/${config.graphVersion}/${p.replace(/^\//, "")}`;
+}
+
+// Simple global pacing so we never burst messages (WhatsApp throughput & quality rules).
+let lastSendAt = 0;
+const MIN_SEND_GAP_MS = 250;
+async function pace() {
+  const wait = lastSendAt + MIN_SEND_GAP_MS - Date.now();
+  lastSendAt = Math.max(Date.now(), lastSendAt + MIN_SEND_GAP_MS);
+  if (wait > 0) await sleep(wait);
+}
+
+async function graph(method: "GET" | "POST", p: string, body?: unknown, attempts = 3): Promise<any> {
+  if (!config.waToken) throw new WhatsAppError("WHATSAPP_TOKEN не настроен", 0);
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(p.startsWith("http") ? p : graphUrl(p), {
+        method,
+        headers: {
+          Authorization: `Bearer ${config.waToken}`,
+          ...(body ? { "Content-Type": "application/json" } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(20_000),
+      });
+      const text = await res.text();
+      let json: any = {};
+      try {
+        json = text ? JSON.parse(text) : {};
+      } catch {
+        json = { raw: text };
+      }
+      if (res.ok) return json;
+      const err = json?.error ?? {};
+      const retryable = res.status === 429 || res.status >= 500 || err.is_transient === true;
+      const msg = [err.message, err.error_data?.details].filter(Boolean).join(" — ") || `HTTP ${res.status}`;
+      lastErr = new WhatsAppError(msg, res.status, err.code, retryable);
+      if (!retryable) throw lastErr;
+    } catch (e) {
+      if (e instanceof WhatsAppError && !e.retryable) throw e;
+      lastErr = e;
+    }
+    await sleep(500 * 2 ** i);
+  }
+  if (lastErr instanceof WhatsAppError) throw lastErr;
+  throw new WhatsAppError(`Сеть недоступна: ${(lastErr as Error)?.message ?? lastErr}`, 0, undefined, true);
+}
+
+/** Splits long text into WhatsApp-sized chunks (max 4096 chars), preferring paragraph/sentence boundaries. */
+export function splitMessage(text: string, max = 4000): string[] {
+  const out: string[] = [];
+  let rest = text.trim();
+  while (rest.length > max) {
+    let cut = rest.lastIndexOf("\n", max);
+    if (cut < max * 0.5) cut = rest.lastIndexOf(". ", max) + 1;
+    if (cut < max * 0.5) cut = rest.lastIndexOf(" ", max);
+    if (cut <= 0) cut = max;
+    out.push(rest.slice(0, cut).trim());
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) out.push(rest);
+  return out;
+}
+
+export async function sendText(to: string, body: string): Promise<string> {
+  await pace();
+  const res = await graph("POST", `${config.waPhoneNumberId}/messages`, {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to,
+    type: "text",
+    text: { body, preview_url: false },
+  });
+  return res?.messages?.[0]?.id ?? "";
+}
+
+export async function sendTemplate(to: string, name: string, languageCode: string): Promise<string> {
+  await pace();
+  const res = await graph("POST", `${config.waPhoneNumberId}/messages`, {
+    messaging_product: "whatsapp",
+    to,
+    type: "template",
+    template: { name, language: { code: languageCode } },
+  });
+  return res?.messages?.[0]?.id ?? "";
+}
+
+/** Marks a message as read and shows "typing…" to the customer (best effort). */
+export async function markReadAndTyping(messageId: string, typing = true): Promise<void> {
+  try {
+    await graph(
+      "POST",
+      `${config.waPhoneNumberId}/messages`,
+      {
+        messaging_product: "whatsapp",
+        status: "read",
+        message_id: messageId,
+        ...(typing ? { typing_indicator: { type: "text" } } : {}),
+      },
+      1,
+    );
+  } catch (e) {
+    console.warn("[wa] mark read failed:", (e as Error).message);
+  }
+}
+
+export async function downloadMedia(mediaId: string, maxBytes = 16 * 1024 * 1024) {
+  const meta = await graph("GET", mediaId);
+  if (!meta?.url) throw new WhatsAppError("Нет URL медиафайла", 0);
+  if (meta.file_size && meta.file_size > maxBytes) throw new WhatsAppError("Файл слишком большой", 0);
+  const res = await fetch(meta.url, {
+    headers: { Authorization: `Bearer ${config.waToken}` },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) throw new WhatsAppError(`Не удалось скачать файл: HTTP ${res.status}`, res.status);
+  const buf = Buffer.from(await res.arrayBuffer());
+  return { data: buf, mimeType: String(meta.mime_type ?? res.headers.get("content-type") ?? "") };
+}
+
+export async function getPhoneInfo() {
+  return graph(
+    "GET",
+    `${config.waPhoneNumberId}?fields=display_phone_number,verified_name,quality_rating,code_verification_status,name_status,platform_type,throughput,messaging_limit_tier`,
+    undefined,
+    1,
+  );
+}
+
+export async function getSubscribedApps() {
+  if (!config.waBusinessAccountId) throw new WhatsAppError("WHATSAPP_BUSINESS_ACCOUNT_ID не настроен", 0);
+  return graph("GET", `${config.waBusinessAccountId}/subscribed_apps`, undefined, 1);
+}
+
+export async function subscribeApp() {
+  if (!config.waBusinessAccountId) throw new WhatsAppError("WHATSAPP_BUSINESS_ACCOUNT_ID не настроен", 0);
+  return graph("POST", `${config.waBusinessAccountId}/subscribed_apps`, undefined, 1);
+}
+
+/** Validates Meta's X-Hub-Signature-256 header against the raw request body. */
+export function verifySignature(rawBody: Buffer, header: string | undefined, appSecret: string): boolean {
+  if (!appSecret || !header || !header.startsWith("sha256=")) return false;
+  const expected = crypto.createHmac("sha256", appSecret).update(rawBody).digest("hex");
+  const got = header.slice("sha256=".length);
+  if (got.length !== expected.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(got, "utf8"), Buffer.from(expected, "utf8"));
+}
+
+// ---------- Webhook payload parsing ----------
+
+export interface InboundMessage {
+  kind: "message";
+  waMessageId: string;
+  from: string;
+  name?: string;
+  timestamp: number;
+  type: string;
+  text?: string;
+  mediaId?: string;
+  mimeType?: string;
+}
+export interface StatusUpdate {
+  kind: "status";
+  waMessageId: string;
+  status: string;
+  recipient: string;
+  error?: string;
+}
+export interface EchoMessage {
+  kind: "echo"; // message the owner sent from the WhatsApp Business app (coexistence mode)
+  waMessageId: string;
+  to: string;
+  timestamp: number;
+  type: string;
+  text?: string;
+}
+export type WebhookEvent = InboundMessage | StatusUpdate | EchoMessage;
+
+function describe(m: any): { text?: string; mediaId?: string; mimeType?: string } {
+  switch (m.type) {
+    case "text":
+      return { text: m.text?.body ?? "" };
+    case "audio":
+      return { mediaId: m.audio?.id, mimeType: m.audio?.mime_type };
+    case "image":
+      return { mediaId: m.image?.id, mimeType: m.image?.mime_type, text: m.image?.caption };
+    case "video":
+      return { mediaId: m.video?.id, text: m.video?.caption ? `[видео] ${m.video.caption}` : "[видео]" };
+    case "document":
+      return {
+        mediaId: m.document?.id,
+        text: `[документ: ${m.document?.filename ?? "файл"}]${m.document?.caption ? " " + m.document.caption : ""}`,
+      };
+    case "sticker":
+      return { text: "[стикер]" };
+    case "location": {
+      const l = m.location ?? {};
+      return { text: `[геолокация] ${[l.name, l.address].filter(Boolean).join(", ")} (${l.latitude}, ${l.longitude})` };
+    }
+    case "contacts":
+      return { text: `[контакт] ${(m.contacts ?? []).map((c: any) => c?.name?.formatted_name).join(", ")}` };
+    case "button":
+      return { text: m.button?.text ?? "" };
+    case "interactive":
+      return {
+        text: m.interactive?.button_reply?.title ?? m.interactive?.list_reply?.title ?? "[интерактивный ответ]",
+      };
+    case "reaction":
+      return { text: m.reaction?.emoji ? `[реакция ${m.reaction.emoji}]` : "[реакция снята]" };
+    default:
+      return { text: `[${m.type ?? "unknown"}]` };
+  }
+}
+
+/** Extracts events for our phone number from a webhook payload. Anything else is ignored. */
+export function parseWebhook(payload: any, phoneNumberId: string): WebhookEvent[] {
+  const out: WebhookEvent[] = [];
+  if (payload?.object !== "whatsapp_business_account") return out;
+  for (const entry of payload.entry ?? []) {
+    for (const change of entry.changes ?? []) {
+      const v = change.value ?? {};
+      const pid = v.metadata?.phone_number_id;
+      if (phoneNumberId && pid && pid !== phoneNumberId) continue;
+      if (change.field === "messages") {
+        const names = new Map<string, string>();
+        for (const c of v.contacts ?? []) names.set(c.wa_id, c.profile?.name);
+        for (const m of v.messages ?? []) {
+          if (!m?.id || !m?.from) continue;
+          out.push({
+            kind: "message",
+            waMessageId: m.id,
+            from: m.from,
+            name: names.get(m.from),
+            timestamp: Number(m.timestamp) || Math.floor(Date.now() / 1000),
+            type: m.type,
+            ...describe(m),
+          });
+        }
+        for (const s of v.statuses ?? []) {
+          if (!s?.id) continue;
+          out.push({
+            kind: "status",
+            waMessageId: s.id,
+            status: s.status,
+            recipient: s.recipient_id,
+            error: s.errors?.[0] ? `${s.errors[0].code}: ${s.errors[0].title}` : undefined,
+          });
+        }
+      } else if (change.field === "smb_message_echoes") {
+        for (const m of v.message_echoes ?? []) {
+          if (!m?.id || !m?.to) continue;
+          out.push({
+            kind: "echo",
+            waMessageId: m.id,
+            to: m.to,
+            timestamp: Number(m.timestamp) || Math.floor(Date.now() / 1000),
+            type: m.type,
+            text: describe(m).text,
+          });
+        }
+      }
+    }
+  }
+  return out;
+}

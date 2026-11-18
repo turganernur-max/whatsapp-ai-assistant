@@ -1,0 +1,13 @@
+{
+  "name": "AI WhatsApp Assistant",
+  "short_name": "AI WhatsApp",
+  "start_url": "/#chats",
+  "display": "standalone",
+  "background_color": "#f4f6f5",
+  "theme_color": "#0f7a5c",
+  "icons": [
+    { "src": "/icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
