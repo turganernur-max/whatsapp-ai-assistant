@@ -718,7 +718,9 @@
         <h3>Этот месяц</h3>
         <div class="stat"><div class="v">${money(c.month_spend)}</div><div class="l">из лимита ${c.monthly_budget > 0 ? money(c.monthly_budget) : "(лимит не задан)"}</div></div>
         <div class="meter"><span data-w="${pct.toFixed(1)}" class="${pct >= 90 ? "hot" : ""}"></span></div>
-        <p class="muted small">Средняя стоимость одного ответа AI: ${money(c.avg_per_reply)}. Когда лимит исчерпан, AI перестаёт отвечать и передаёт клиентов вам. Лимит меняется в Настройки → Настройки AI.</p>
+        <p class="muted small">Средняя стоимость одного ответа AI: ${money(c.avg_per_reply)}. Когда лимит исчерпан, AI перестаёт отвечать и передаёт клиентов вам.</p>
+        <label class="field">Месячный лимит, $ (0 = без лимита)</label>
+        <div class="row"><input type="number" id="budget" class="grow" min="0" step="1" inputmode="decimal" value="${c.monthly_budget}"><button class="btn primary" id="budget-save">Сохранить</button></div>
         <p class="muted small">Оценка по прайсу Anthropic; точная сумма — в консоли Claude (platform.claude.com → Billing). Рекомендуется также поставить лимит расходов там.</p>
       </div>
       <div class="card"><h3>По дням</h3>${c.byDay.length ? bars(c.byDay.map((d) => ({ ...d, cost_c: Math.round(d.cost * 10000) })), "cost_c", "day") : '<p class="muted">Нет расходов в этом месяце</p>'}</div>
@@ -727,6 +729,17 @@
         .join("")}</table></div>
       <div class="card"><h3>По месяцам</h3><table>${c.months.map((m) => `<tr><td>${esc(m.month)}</td><td class="num">${money(m.cost)}</td></tr>`).join("")}</table></div>`;
     $("#to-stats").addEventListener("click", () => (location.hash = "#stats"));
+    $("#budget-save").addEventListener("click", async () => {
+      const v = Number(String($("#budget").value).replace(",", "."));
+      if (!Number.isFinite(v) || v < 0) return toast("Введите число, например 10", true);
+      try {
+        await api("PUT", "/api/settings", { monthly_budget_usd: v });
+        toast(v > 0 ? "Лимит: $" + v + " в месяц ✓" : "Лимит отключён");
+        renderCosts();
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
     applyBarHeights();
   }
 
