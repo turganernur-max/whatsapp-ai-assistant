@@ -360,7 +360,11 @@ export async function processContact(waId: string): Promise<void> {
         // Send like a person: a few short bubbles with typing pauses in between.
         const bubbles = humanBubbles(text);
         for (let i = 0; i < bubbles.length; i++) {
-          if (s.human_delay) await humanPause(bubbles[i], i === 0 ? newest.wa_message_id : null);
+          if (s.human_delay) await humanPause(bubbles[i], newest.wa_message_id);
+          if (i > 0) {
+            const now = await getContact(waId);
+            if (!now?.ai_enabled || (now.paused_until && new Date(now.paused_until).getTime() > Date.now())) break;
+          }
           await sendAndStore(waId, bubbles[i], "ai");
         }
       } else {

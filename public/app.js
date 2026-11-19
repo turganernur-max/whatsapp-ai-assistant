@@ -221,6 +221,10 @@
     if (!o.ai_enabled) warn.push(`<div class="banner warn">AI выключен — клиенты не получают автоответы. Включите переключатель вверху.</div>`);
     if (!o.integrations.whatsapp) warn.push(`<div class="banner danger">${esc(o.integrations.whatsappProblem || "WhatsApp не подключён. Откройте Настройки → Подключение WhatsApp.")}</div>`);
     if (!o.integrations.claude) warn.push(`<div class="banner danger">Ключ Claude API не задан.</div>`);
+    if (o.wa_auth_error)
+      warn.push(`<div class="banner danger"><b>WhatsApp не работает: токен недействителен или истёк.</b> AI не может отвечать клиентам. Создайте новый токен в Meta и замените WHATSAPP_TOKEN в Render. <a href="#whatsapp">Подробнее</a></div>`);
+    if (o.hints && o.hints.payment_missing)
+      warn.push(`<div class="banner warn small">Не заполнено «Как оплатить» — AI не сможет дать клиенту реквизиты Kaspi. <a href="#ai-settings">Заполнить</a></div>`);
     if (o.monthly_budget > 0 && o.month_spend >= o.monthly_budget)
       warn.push(`<div class="banner danger">Месячный лимит расходов исчерпан (${money(o.month_spend)} из ${money(o.monthly_budget)}). AI не отвечает.</div>`);
     view.innerHTML = `${warn.join("")}
@@ -536,7 +540,11 @@
     title("Заказы");
     const r = await api("GET", `/api/orders?status=${orderFilter}`);
     const sm = r.summary;
-    view.innerHTML = `
+    const ov = await api("GET", "/api/overview").catch(() => ({ hints: {} }));
+    const hint = ov.hints && ov.hints.push_missing
+      ? `<div class="banner warn small">Уведомления о новых заказах на телефон не подключены. Установите приложение <b>ntfy</b> и добавьте NTFY_TOPIC в Render (инструкция в docs/SETUP_RU.md, шаг 9).</div>`
+      : "";
+    view.innerHTML = `${hint}
       <div class="stats-grid">
         <div class="stat"><div class="v">${sm.open}</div><div class="l">Открытых заказов</div></div>
         <div class="stat"><div class="v">${sm.payment_check}</div><div class="l">Проверить оплату</div></div>
@@ -945,7 +953,7 @@
     title("Статистика");
     const st = await api("GET", "/api/stats");
     const t = st.totals;
-    const kinds = { handoff: "➡️ Передано владельцу", error: "❗ Ошибка", optout: "🚫 Отказ от автоответов", budget: "💸 Лимит расходов", loop_guard: "🔁 Защита от зацикливания", followup: "🔔 Напоминание клиенту", broadcast: "📢 Рассылка" };
+    const kinds = { handoff: "➡️ Передано владельцу", error: "❗ Ошибка", optout: "🚫 Отказ от автоответов", budget: "💸 Лимит расходов", loop_guard: "🔁 Защита от зацикливания", followup: "🔔 Напоминание клиенту", broadcast: "📢 Рассылка", order: "🛒 Заказ", payment: "💳 Оплата" };
     view.innerHTML = `
       <div class="seg"><button class="on">Статистика</button><button id="to-costs">Расходы API</button></div>
       <div class="stats-grid">

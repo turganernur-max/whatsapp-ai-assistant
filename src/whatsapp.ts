@@ -8,6 +8,18 @@ export function redact(text: string): string {
   return out.replace(/EAA[A-Za-z0-9_\-]{10,}/g, "EAA…(скрыто)").replace(/Bearer\s+\S+/g, "Bearer …(скрыто)");
 }
 
+/** Last authentication problem with the WhatsApp token (e.g. expired temporary token). */
+export const waHealth = { authError: null as string | null, since: 0 };
+function noteAuth(ok: boolean, status = 0, code?: number, message = "") {
+  if (ok) {
+    waHealth.authError = null;
+    waHealth.since = 0;
+  } else if (code === 190 || status === 401) {
+    if (!waHealth.authError) waHealth.since = Date.now();
+    waHealth.authError = message || "Токен WhatsApp недействителен";
+  }
+}
+
 export class WhatsAppError extends Error {
   constructor(
     message: string,
@@ -57,8 +69,12 @@ async function graph(method: "GET" | "POST", p: string, body?: unknown, attempts
       } catch {
         json = { raw: text };
       }
-      if (res.ok) return json;
+      if (res.ok) {
+        noteAuth(true);
+        return json;
+      }
       const err = json?.error ?? {};
+      noteAuth(false, res.status, err.code, redact(String(err.message ?? "")));
       const retryable = res.status === 429 || res.status >= 500 || err.is_transient === true;
       const msg = [err.message, err.error_data?.details].filter(Boolean).join(" — ") || `HTTP ${res.status}`;
       lastErr = new WhatsAppError(msg, res.status, err.code, retryable);

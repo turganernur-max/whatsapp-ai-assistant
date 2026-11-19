@@ -23,6 +23,7 @@ const TEMPLATES = [
   { name: "draft", language: "ru", status: "PENDING", category: "UTILITY", components: [{ type: "BODY", text: "x" }] },
 ];
 let failSends = false;
+let authFail = false;
 const graph = http.createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
@@ -40,6 +41,10 @@ const graph = http.createServer((req, res) => {
       if (b.to === "77070000001") {
         res.statusCode = 400;
         return res.end(JSON.stringify({ error: { message: "(#131030) Recipient phone number not in allowed list", code: 131030 } }));
+      }
+      if (authFail) {
+        res.statusCode = 401;
+        return res.end(JSON.stringify({ error: { message: "Error validating access token: Session has expired", type: "OAuthException", code: 190 } }));
       }
       if (failSends) {
         res.statusCode = 400;
@@ -759,4 +764,33 @@ test("default: after a handoff the AI keeps talking (one push per issue) until t
   await postWebhook(inbound("77010000080", "Жақсы"));
   await drain();
   assert.equal(claudeCalls.length, 2, "AI silent once the owner took over");
+});
+
+test("expired WhatsApp token is detected and shown in the panel, cleared when it works again", async () => {
+  const h = await login();
+  authFail = true;
+  await postWebhook(inbound("77010000090", "Сәлем"));
+  await drain();
+  authFail = false;
+  const ov = (await app.inject({ url: "/api/overview", headers: h })).json();
+  assert.match(ov.wa_auth_error, /expired/);
+  assert.ok(!String(ov.wa_auth_error).includes("EAATESTFAKE"), "token never leaks");
+  await postWebhook(inbound("77010000091", "Сәлем"));
+  await drain();
+  const ov2 = (await app.inject({ url: "/api/overview", headers: h })).json();
+  assert.equal(ov2.wa_auth_error, null);
+  assert.equal(typeof ov2.hints.payment_missing, "boolean");
+});
+
+test("persistent reminders still run in a chat that is waiting for the owner", async () => {
+  const { runFollowups } = await import("../src/campaigns.js");
+  await updateSettings({ followup_hours: 1, followup_max: 2 });
+  nextReply = { reply: "Нақтылап алайын…", handoff: true, handoff_reason: "сомневается", send_media: [] };
+  await postWebhook(inbound("77010000092", "Ойланамын"));
+  await drain();
+  const h = await login();
+  await app.inject({ method: "PATCH", url: "/api/contacts/77010000092", headers: h, payload: { followup_mode: "persistent" } });
+  await getDb().query(`UPDATE messages SET created_at = now() - interval '2 hours' WHERE wa_id = '77010000092' AND sender = 'ai'`);
+  nextReply = { reply: "Сұрағыңыз бойынша көмектесейін бе?", handoff: false, handoff_reason: "", send_media: [] };
+  assert.equal(await runFollowups(), 1);
 });

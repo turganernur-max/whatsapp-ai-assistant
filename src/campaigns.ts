@@ -37,7 +37,7 @@ export async function dueFollowups(hours: number, globalOn: boolean, max: number
      JOIN LATERAL (SELECT sender, created_at FROM messages m
                    WHERE m.wa_id = c.wa_id AND NOT (m.direction = 'out' AND m.status = 'failed')
                    ORDER BY m.id DESC LIMIT 1) last ON TRUE
-     WHERE c.ai_enabled AND NOT c.opted_out AND NOT c.needs_attention
+     WHERE c.ai_enabled AND NOT c.opted_out AND (NOT c.needs_attention OR c.followup_mode = 'persistent')
        AND (c.paused_until IS NULL OR c.paused_until < now())
        AND c.last_inbound_at > now() - interval '23 hours'
        AND last.sender = 'ai'

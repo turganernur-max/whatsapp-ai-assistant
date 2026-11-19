@@ -162,6 +162,12 @@ export async function buildServer(): Promise<FastifyInstance> {
       );
       return {
         ai_enabled: s.ai_enabled,
+        wa_auth_error: wa.waHealth.authError,
+        hints: {
+          payment_missing: s.sales_mode && !s.payment_instructions.trim(),
+          delivery_missing: s.sales_mode && !s.delivery_info.trim(),
+          push_missing: !config.ntfyTopic,
+        },
         month_spend: await monthSpendUsd(),
         monthly_budget: s.monthly_budget_usd,
         integrations: integrationStatus(),

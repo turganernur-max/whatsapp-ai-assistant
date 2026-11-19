@@ -81,6 +81,7 @@ export async function toWhatsAppMp4(input: Buffer): Promise<Buffer> {
         "-hide_banner", "-y", "-i", src,
         "-map", "0:v:0", "-map", "0:a:0?",
         "-vf", "scale='if(gt(iw,ih),min(1280,iw),-2)':'if(gt(iw,ih),-2,min(1280,ih))',format=yuv420p",
+        "-threads", "2",
         "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "main",
         "-b:v", `${kbps}k`, "-maxrate", `${kbps}k`, "-bufsize", `${kbps * 2}k`,
         "-c:a", "aac", "-b:a", `${audioKbps}k`, "-ac", "2",
