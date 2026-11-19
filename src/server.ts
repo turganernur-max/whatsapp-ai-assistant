@@ -451,7 +451,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     reply
       .code(200)
       .header("Content-Type", "text/html; charset=utf-8")
-      .header("Cache-Control", "public, max-age=300, no-transform")
+      .header("Cache-Control", "no-store, no-transform")
       .header("Accept-Ranges", "none")
       .send(privacyHtml);
   app.get("/privacy.html", sendPrivacy);
