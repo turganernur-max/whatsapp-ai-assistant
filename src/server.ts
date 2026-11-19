@@ -10,7 +10,7 @@ import { COOKIE, SESSION_MAX_AGE, checkPassword, issueToken, loginBlocked, login
 import { getSettings, updateSettings, SettingsSchema, MODELS } from "./settings.js";
 import * as wa from "./whatsapp.js";
 import { handleEvents, ownerSend, ownerSendFile, schedule } from "./processor.js";
-import { addMedia, getMediaFile, listMedia, MediaError } from "./media.js";
+import { addMedia, getMediaFile, listMedia, MediaError, MAX_RAW_UPLOAD } from "./media.js";
 import { generateReply, AiError } from "./ai.js";
 import { costUsd } from "./pricing.js";
 import { getContact, getKnowledge, monthSpendUsd, recordUsage, updateContact } from "./store.js";
@@ -51,6 +51,9 @@ export async function buildServer(): Promise<FastifyInstance> {
       done(err, undefined);
     }
   });
+
+  // Raw file uploads from the panel (videos can be large; no base64 overhead).
+  app.addContentTypeParser("application/octet-stream", { parseAs: "buffer" }, (_req, body, done) => done(null, body));
 
   await app.register(cookie);
 
@@ -331,6 +334,42 @@ export async function buildServer(): Promise<FastifyInstance> {
       } catch (e) {
         if (e instanceof MediaError) return reply.code(400).send({ error: e.message });
         throw e;
+      }
+    });
+    // Binary upload: body = file bytes, metadata in the query string.
+    const RAW_LIMIT = MAX_RAW_UPLOAD + 1024 * 1024;
+    const rawMeta = (q: unknown) =>
+      z
+        .object({
+          title: z.string().trim().max(200).default(""),
+          description: z.string().max(1000).default(""),
+          filename: z.string().max(200).default(""),
+          mime: z.string().min(3).max(100),
+          caption: z.string().max(1024).optional(),
+        })
+        .parse(q);
+    const rawBody = (b: unknown) => {
+      if (!Buffer.isBuffer(b) || !b.length) throw new MediaError("Пустой файл");
+      return b;
+    };
+    api.post("/api/media/raw", { bodyLimit: RAW_LIMIT }, async (req, reply) => {
+      try {
+        const m = rawMeta(req.query);
+        if (!m.title) throw new MediaError("Напишите название");
+        return await addMedia({ title: m.title, description: m.description, filename: m.filename, mime: m.mime, data: rawBody(req.body) });
+      } catch (e) {
+        if (e instanceof MediaError) return reply.code(400).send({ error: e.message });
+        throw e;
+      }
+    });
+    api.post("/api/contacts/:waId/send-file-raw", { bodyLimit: RAW_LIMIT }, async (req, reply) => {
+      const { waId } = req.params as { waId: string };
+      try {
+        const m = rawMeta(req.query);
+        await ownerSendFile(waId, { data: rawBody(req.body), mime: m.mime, filename: m.filename, caption: m.caption });
+        return { ok: true };
+      } catch (e) {
+        return reply.code(400).send({ error: (e as Error).message });
       }
     });
     api.put("/api/media/:id", async (req, reply) => {

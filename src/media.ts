@@ -1,5 +1,6 @@
 import { getDb } from "./db.js";
 import { MEDIA_RULES, sendMediaMessage, uploadMedia, type MediaKind } from "./whatsapp.js";
+import { toWhatsAppMp4, VideoError } from "./video.js";
 
 export interface MediaItem {
   id: number;
@@ -17,6 +18,29 @@ const LIBRARY_LIMIT_BYTES = 200 * 1024 * 1024; // keeps the free database small
 const REUPLOAD_AFTER_MS = 25 * 24 * 3600_000; // WhatsApp media ids expire after ~30 days
 
 export class MediaError extends Error {}
+
+export const MAX_RAW_UPLOAD = 80 * 1024 * 1024; // before video conversion
+
+/**
+ * Normalises an uploaded file for WhatsApp: any video becomes an MP4 (H.264/AAC) under 16 MB.
+ * Returns the bytes to store/send plus the final type and name.
+ */
+export async function prepareFile(data: Buffer, mime: string, filename: string) {
+  const m = (mime || "").toLowerCase().split(";")[0].trim();
+  if (m.startsWith("video/")) {
+    if (data.length > MAX_RAW_UPLOAD) throw new MediaError("Видео больше 80 МБ. Обрежьте его в «Фото» и попробуйте снова.");
+    let mp4: Buffer;
+    try {
+      mp4 = await toWhatsAppMp4(data);
+    } catch (e) {
+      throw new MediaError(e instanceof VideoError ? e.message : "Не удалось обработать видео");
+    }
+    const base = (filename || "video").replace(/\.[^.]+$/, "");
+    return { data: mp4, mime: "video/mp4", filename: `${base}.mp4`, kind: "video" as MediaKind };
+  }
+  const kind = validateFile(m, data.length);
+  return { data, mime: m, filename, kind };
+}
 
 /** Picks how WhatsApp should show a file. Unsupported video formats (e.g. iPhone .mov) go as documents. */
 export function classify(mime: string): MediaKind {
@@ -56,8 +80,10 @@ export async function listMedia(enabledOnly = false): Promise<MediaItem[]> {
   );
 }
 
-export async function addMedia(input: { title: string; description: string; filename: string; mime: string; data: Buffer }) {
-  const kind = validateFile(input.mime, input.data.length);
+export async function addMedia(raw: { title: string; description: string; filename: string; mime: string; data: Buffer }) {
+  const prepared = await prepareFile(raw.data, raw.mime, raw.filename);
+  const input = { ...raw, ...prepared };
+  const kind = prepared.kind;
   const [{ total }] = await getDb().query<{ total: number }>(`SELECT COALESCE(SUM(size),0)::float8 AS total FROM media`);
   if (Number(total) + input.data.length > LIBRARY_LIMIT_BYTES) {
     throw new MediaError("Медиатека заполнена (200 МБ). Удалите ненужные файлы.");
@@ -118,8 +144,9 @@ export async function sendLibraryItem(to: string, id: number) {
 }
 
 /** Sends a one-off file (owner attaches it in the chat); nothing is stored. */
-export async function sendOneOffFile(to: string, file: { data: Buffer; mime: string; filename: string; caption?: string }) {
-  const kind = validateFile(file.mime, file.data.length);
+export async function sendOneOffFile(to: string, raw: { data: Buffer; mime: string; filename: string; caption?: string }) {
+  const file = { ...raw, ...(await prepareFile(raw.data, raw.mime, raw.filename)) };
+  const kind = file.kind;
   const filename = safeFilename(file.filename, file.mime);
   const mediaId = await uploadMedia(file.data, file.mime, filename);
   const waId = await sendMediaMessage(to, kind, mediaId, file.caption, filename);

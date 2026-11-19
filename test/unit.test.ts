@@ -110,3 +110,30 @@ test("alternate recipient spelling for KZ/RU numbers", async () => {
   assert.equal(alternateRecipient("787071234567"), "77071234567");
   assert.equal(alternateRecipient("15551234567"), null);
 });
+
+test("videos are converted to WhatsApp MP4 (remux for H.264, re-encode otherwise)", async () => {
+  const fs = await import("node:fs");
+  const { toWhatsAppMp4, parseProbe } = await import("../src/video.js");
+  const { execFileSync } = await import("node:child_process");
+  const { createRequire } = await import("node:module");
+  const ff = createRequire(import.meta.url)("ffmpeg-static") as string;
+  const probe = (buf: Buffer) => {
+    const f = `${process.env.TMPDIR || "/tmp"}/probe-${Date.now()}.mp4`;
+    fs.writeFileSync(f, buf);
+    try {
+      execFileSync(ff, ["-hide_banner", "-i", f], { stdio: "pipe" });
+    } catch (e: any) {
+      return parseProbe(String(e.stderr));
+    } finally {
+      fs.rmSync(f, { force: true });
+    }
+    return parseProbe("");
+  };
+  for (const name of ["h264.mov", "mpeg4.mov"]) {
+    const out = await toWhatsAppMp4(fs.readFileSync(new URL(`./fixtures/${name}`, import.meta.url)));
+    const info = probe(out);
+    assert.equal(info.videoCodec, "h264", name);
+    assert.equal(info.audioCodec, "aac", name);
+    assert.ok(out.length < 16 * 1024 * 1024);
+  }
+});

@@ -437,14 +437,41 @@ test("owner sends a photo from the panel and from the library; bad files rejecte
   const big = Buffer.alloc(17 * 1024 * 1024, 1).toString("base64");
   const vid = await app.inject({ method: "POST", url: "/api/media", headers: h, payload: { title: "v", mime: "video/mp4", data: big } });
   assert.equal(vid.statusCode, 400);
-  assert.match(vid.json().error, /16 МБ/);
+  assert.ok(vid.json().error);
 
-  const doc = await app.inject({ method: "POST", url: "/api/media", headers: h, payload: { title: "Видео зала", filename: "zal.mov", mime: "video/quicktime", data: PNG_B64 } });
-  assert.equal(doc.json().kind, "document", ".mov goes as a document");
-  const lib = await app.inject({ method: "POST", url: "/api/contacts/77010000021/send-file", headers: h, payload: { library_id: doc.json().id } });
+  // iPhone-style .mov is converted to MP4 and sent as a real video (raw binary upload).
+  const fs = await import("node:fs");
+  const mov = fs.readFileSync(new URL("./fixtures/mpeg4.mov", import.meta.url));
+  const up = await app.inject({
+    method: "POST",
+    url: "/api/media/raw?title=" + encodeURIComponent("Видео зала") + "&filename=zal.mov&mime=video/quicktime",
+    headers: { ...h, "content-type": "application/octet-stream" },
+    payload: mov,
+  });
+  assert.equal(up.statusCode, 200, up.body);
+  assert.equal(up.json().kind, "video");
+  assert.equal(up.json().mime, "video/mp4");
+  assert.equal(up.json().filename, "zal.mp4");
+  const lib = await app.inject({ method: "POST", url: "/api/contacts/77010000021/send-file", headers: h, payload: { library_id: up.json().id } });
   assert.equal(lib.statusCode, 200, lib.body);
-  assert.equal(sent.at(-1).type, "document");
-  assert.equal(sent.at(-1).document.filename, "zal.mov");
+  assert.equal(sent.at(-1).type, "video");
+  const h264 = fs.readFileSync(new URL("./fixtures/h264.mov", import.meta.url));
+  const one2 = await app.inject({
+    method: "POST",
+    url: "/api/contacts/77010000021/send-file-raw?filename=IMG_0001.MOV&mime=video/quicktime&caption=" + encodeURIComponent("Зал"),
+    headers: { ...h, "content-type": "application/octet-stream" },
+    payload: h264,
+  });
+  assert.equal(one2.statusCode, 200, one2.body);
+  assert.equal(sent.at(-1).type, "video");
+  assert.equal(sent.at(-1).video.caption, "Зал");
+  const broken = await app.inject({
+    method: "POST",
+    url: "/api/media/raw?title=x&filename=x.mov&mime=video/quicktime",
+    headers: { ...h, "content-type": "application/octet-stream" },
+    payload: Buffer.from("not a video"),
+  });
+  assert.equal(broken.statusCode, 400);
   const [c] = await getDb().query(`SELECT paused_until FROM contacts WHERE wa_id = '77010000021'`);
   assert.ok(new Date(c.paused_until) > new Date(), "owner takeover pauses AI");
 });

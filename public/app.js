@@ -9,13 +9,6 @@
 
   // ---------------- Files ----------------
   const MB = 1024 * 1024;
-  const readAsBase64 = (blob) =>
-    new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(String(r.result).split(",")[1] || "");
-      r.onerror = () => reject(new Error("Не удалось прочитать файл"));
-      r.readAsDataURL(blob);
-    });
   // iPhone photos are often HEIC and large: re-encode to JPEG (max 1600 px) so WhatsApp accepts them.
   async function toJpeg(file) {
     const url = URL.createObjectURL(file);
@@ -38,7 +31,7 @@
       URL.revokeObjectURL(url);
     }
   }
-  /** Prepares a picked file for upload: {mime, filename, data(base64), note}. */
+  /** Prepares a picked file for upload: {blob, mime, filename, note}. Videos are converted on the server. */
   async function preparePickedFile(file) {
     let blob = file;
     let mime = file.type || "application/octet-stream";
@@ -51,12 +44,29 @@
         filename = filename.replace(/\.[^.]+$/, "") + ".jpg";
       }
     } else if (mime.startsWith("video/")) {
-      if (file.size > 16 * MB) throw new Error(`Видео ${(file.size / MB).toFixed(1)} МБ — WhatsApp принимает до 16 МБ. Обрежьте видео в «Фото» (Править) и попробуйте снова.`);
-      if (!["video/mp4", "video/3gpp"].includes(mime)) note = "Видео в формате " + (mime.split("/")[1] || "?").toUpperCase() + " будет отправлено как файл (WhatsApp показывает как видео только MP4).";
+      if (file.size > 80 * MB) throw new Error(`Видео ${(file.size / MB).toFixed(0)} МБ — слишком большое. Обрежьте его в «Фото» (Править) до 1–2 минут.`);
+      note = "Сервер переделает видео в формат WhatsApp (MP4). Это может занять 1–3 минуты — не закрывайте страницу.";
     } else if (file.size > 16 * MB) {
       throw new Error("Файл больше 16 МБ");
     }
-    return { mime, filename, data: await readAsBase64(blob), note };
+    return { blob, mime, filename, note };
+  }
+  /** Sends file bytes as-is (no base64), metadata in the query string. */
+  async function uploadRaw(url, f, params) {
+    const qs = new URLSearchParams({ ...params, mime: f.mime, filename: f.filename });
+    const res = await fetch(`${url}?${qs}`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "X-Requested-With": "panel", "Content-Type": "application/octet-stream" },
+      body: f.blob,
+    });
+    if (res.status === 401) {
+      showLogin();
+      throw new Error("Нужно войти");
+    }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Ошибка " + res.status);
+    return data;
   }
   const kindIcon = (k) => (k === "image" ? "📷" : k === "video" ? "🎬" : "📎");
   let currentRoute = "";
@@ -382,8 +392,9 @@
         const f = await preparePickedFile(file);
         const caption = $("#reply").value.trim();
         if (!confirm(`Отправить клиенту «${file.name || "файл"}»${caption ? " с подписью из поля ответа" : ""}?${f.note ? "\n\n" + f.note : ""}`)) return;
-        toast("Отправляю…");
-        await api("POST", `/api/contacts/${encodeURIComponent(waId)}/send-file`, { mime: f.mime, filename: f.filename, data: f.data, caption: caption || undefined });
+        toast(f.mime.startsWith("video/") ? "Обрабатываю видео и отправляю… (до 3 минут)" : "Отправляю…");
+        const params = caption ? { caption } : {};
+        await uploadRaw(`/api/contacts/${encodeURIComponent(waId)}/send-file-raw`, f, params);
         $("#reply").value = "";
         await afterFileSent();
       } catch (err) {
@@ -573,7 +584,7 @@
         <h3>Добавить файл</h3>
         <label class="field">Название</label><input type="text" id="m-title" placeholder="Например: Прайс-лист">
         <label class="field">Когда отправлять (для AI)</label><textarea id="m-desc" class="short" placeholder="Например: когда клиент спрашивает цены или услуги"></textarea>
-        <label class="field">Фото (до 5 МБ), видео MP4 (до 16 МБ) или PDF</label>
+        <label class="field">Фото, видео (до ~2 минут) или PDF</label>
         <input type="file" id="m-file" accept="image/*,video/*,application/pdf">
         <p id="m-note" class="muted small"></p>
         <button class="btn primary wide" id="m-save">Загрузить</button>
@@ -600,8 +611,8 @@
       $("#m-note").textContent = "";
       if (!f) return;
       if (!$("#m-title").value) $("#m-title").value = (f.name || "").replace(/\.[^.]+$/, "");
-      if (f.type.startsWith("video/") && !["video/mp4", "video/3gpp"].includes(f.type))
-        $("#m-note").textContent = "Это видео не в формате MP4 — клиент получит его как файл. Чтобы было видео, нужен MP4.";
+      if (f.type.startsWith("video/"))
+        $("#m-note").textContent = "Видео будет автоматически переделано в формат WhatsApp (MP4, до 16 МБ). Загрузка может занять 1–3 минуты.";
     });
     $("#m-save").addEventListener("click", async () => {
       const file = $("#m-file").files[0];
@@ -613,7 +624,8 @@
       btn.textContent = "Загружаю…";
       try {
         const f = await preparePickedFile(file);
-        await api("POST", "/api/media", { title, description: $("#m-desc").value, filename: f.filename, mime: f.mime, data: f.data });
+        if (f.note) btn.textContent = "Обрабатываю видео… (до 3 минут)";
+        await uploadRaw("/api/media/raw", f, { title, description: $("#m-desc").value });
         toast("Загружено ✓");
         await renderMediaLibrary(box);
       } catch (err) {
