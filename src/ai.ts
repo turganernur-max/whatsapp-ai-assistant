@@ -14,8 +14,15 @@ export interface KnowledgeItem {
   title: string;
   content: string;
 }
+export interface MediaOption {
+  id: number;
+  title: string;
+  description: string;
+  kind: "image" | "video" | "document";
+}
 export interface AiDecision {
   reply: string;
+  mediaIds: number[];
   handoff: boolean;
   handoffReason: string;
   model: string;
@@ -42,8 +49,13 @@ const OUTPUT_SCHEMA = {
     reply: { type: "string", description: "Текст сообщения клиенту (может быть пустым только если handoff=true)." },
     handoff: { type: "boolean", description: "true — нужно передать разговор владельцу." },
     handoff_reason: { type: "string", description: "Коротко для владельца: почему нужна передача. Пусто, если handoff=false." },
+    send_media: {
+      type: "array",
+      items: { type: "integer" },
+      description: "ID файлов из медиатеки, которые нужно отправить клиенту вместе с ответом. Пусто, если не нужно.",
+    },
   },
-  required: ["reply", "handoff", "handoff_reason"],
+  required: ["reply", "handoff", "handoff_reason", "send_media"],
   additionalProperties: false,
 } as const;
 
@@ -60,9 +72,11 @@ const CORE_RULES = `Ты — AI-помощник, который ведёт пе
 8. Если клиент прислал голосовое и есть расшифровка — отвечай по её смыслу. Если расшифровки нет — вежливо попроси написать текстом.
 9. Если handoff=true, в поле reply напиши клиенту короткое вежливое сообщение, что вопрос передан владельцу (на языке клиента), или оставь пустым — тогда будет отправлен стандартный текст.
 
-Ответ строго в JSON по схеме: reply, handoff, handoff_reason.`;
+10. Фото, видео и файлы: можно отправлять только файлы из раздела «МЕДИАТЕКА» ниже, указав их ID в send_media. Отправляй файл, когда клиент просит показать/прислать что-то или когда описание файла прямо говорит, в какой ситуации его отправлять. Не больше 3 файлов за раз, не повторяй файл, который уже был отправлен в этом диалоге, если клиент не просит снова. Не обещай файл, которого нет в медиатеке.
 
-export function buildSystem(s: Settings, kb: KnowledgeItem[], learnedStyle: string[]) {
+Ответ строго в JSON по схеме: reply, handoff, handoff_reason, send_media.`;
+
+export function buildSystem(s: Settings, kb: KnowledgeItem[], learnedStyle: string[], media: MediaOption[] = []) {
   const parts: string[] = [CORE_RULES.replace("{MAX_CHARS}", String(s.max_reply_chars))];
   if (s.business_name || s.owner_name) {
     parts.push(
@@ -77,6 +91,13 @@ export function buildSystem(s: Settings, kb: KnowledgeItem[], learnedStyle: stri
     ? kb.map((k, i) => `### ${i + 1}. ${k.title}\n${k.content.trim()}`).join("\n\n")
     : "(база знаний пуста — на фактические вопросы отвечай, что уточнишь у владельца)";
   parts.push(`БАЗА ЗНАНИЙ (единственный источник фактов)\n${kbText}`);
+  const kindName = { image: "фото", video: "видео", document: "файл" } as const;
+  parts.push(
+    `МЕДИАТЕКА (файлы, которые можно отправить клиенту через send_media)\n` +
+      (media.length
+        ? media.map((m) => `- ID ${m.id}: ${kindName[m.kind]} «${m.title}»${m.description.trim() ? ` — ${m.description.trim()}` : ""}`).join("\n")
+        : "(пусто — файлы отправлять нельзя, send_media всегда пустой)"),
+  );
 
   const system: Anthropic.Beta.BetaTextBlockParam[] = [
     // Stable prefix -> cached, so repeated messages cost much less.
@@ -143,6 +164,7 @@ export async function generateReply(
   learnedStyle: string[],
   history: HistoryItem[],
   images: ImageInput[],
+  media: MediaOption[] = [],
 ): Promise<AiDecision> {
   if (!config.anthropicApiKey && !client) throw new AiError("ANTHROPIC_API_KEY не настроен", false);
   const nowText = new Intl.DateTimeFormat("ru-RU", {
@@ -154,7 +176,7 @@ export async function generateReply(
   const params: Anthropic.Beta.MessageCreateParamsNonStreaming = {
     model: s.model,
     max_tokens: 8000,
-    system: buildSystem(s, kb, learnedStyle),
+    system: buildSystem(s, kb, learnedStyle, media),
     messages: buildMessages(history, images, nowText),
     output_config: { effort: s.effort, format: { type: "json_schema", schema: OUTPUT_SCHEMA as any } },
   };
@@ -185,7 +207,7 @@ export async function generateReply(
   const model = res.model || s.model;
 
   if (res.stop_reason === "refusal") {
-    return { reply: "", handoff: true, handoffReason: "AI отказался отвечать на это сообщение", model, usage };
+    return { reply: "", mediaIds: [], handoff: true, handoffReason: "AI отказался отвечать на это сообщение", model, usage };
   }
   const text = res.content
     .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
@@ -194,9 +216,14 @@ export async function generateReply(
   try {
     const parsed = JSON.parse(text);
     const reply = typeof parsed.reply === "string" ? parsed.reply.trim() : "";
-    const handoff = Boolean(parsed.handoff) || !reply;
+    const allowed = new Set(media.map((m) => m.id));
+    const mediaIds = Array.isArray(parsed.send_media)
+      ? [...new Set(parsed.send_media.map(Number).filter((id: number) => allowed.has(id)))].slice(0, 3) as number[]
+      : [];
+    const handoff = Boolean(parsed.handoff) || (!reply && !mediaIds.length);
     return {
       reply: reply.slice(0, Math.max(s.max_reply_chars * 2, 500)),
+      mediaIds: handoff ? [] : mediaIds,
       handoff,
       handoffReason: handoff ? String(parsed.handoff_reason || "AI не смог ответить") : "",
       model,
@@ -205,6 +232,7 @@ export async function generateReply(
   } catch {
     return {
       reply: "",
+      mediaIds: [],
       handoff: true,
       handoffReason: res.stop_reason === "max_tokens" ? "Ответ AI оборван (лимит токенов)" : "AI вернул некорректный ответ",
       model,

@@ -6,6 +6,7 @@ import { getSettings } from "./settings.js";
 import { estimateAudioSeconds, transcribe } from "./stt.js";
 import { notifyOwner } from "./notify.js";
 import * as wa from "./whatsapp.js";
+import { listMedia, mediaLabel, sendLibraryItem, sendOneOffFile } from "./media.js";
 import {
   getContact,
   getKnowledge,
@@ -310,7 +311,8 @@ export async function processContact(waId: string): Promise<void> {
 
   let decision;
   try {
-    decision = await generateReply(s, kb, learned, history, images);
+    const media = (await listMedia(true)).map((m) => ({ id: m.id, title: m.title, description: m.description, kind: m.kind }));
+    decision = await generateReply(s, kb, learned, history, images, media);
   } catch (e) {
     const err = e as AiError;
     const n = (retries.get(waId) ?? 0) + 1;
@@ -358,6 +360,14 @@ export async function processContact(waId: string): Promise<void> {
     return;
   }
 
+  for (const mediaId of decision.mediaIds) {
+    try {
+      await sendLibraryAndStore(waId, mediaId, "ai");
+    } catch (e) {
+      await flagAttention(waId, `Не удалось отправить файл из медиатеки: ${(e as Error).message}`, "error");
+    }
+  }
+
   if (decision.handoff) {
     if (s.pause_after_handoff) {
       await updateContact(waId, { paused_until: new Date(Date.now() + Math.max(1, s.owner_takeover_hours) * 3600_000) });
@@ -390,6 +400,62 @@ export async function ownerSend(waId: string, text: string) {
     );
   }
   await sendAndStore(waId, text, "owner");
+  await ownerTookOver(waId);
+}
+
+async function requireOpenWindow(waId: string) {
+  const c = await getContact(waId);
+  if (!c) throw new Error("Контакт не найден");
+  if (!c.last_inbound_at || Date.now() - new Date(c.last_inbound_at).getTime() > WINDOW_MS) {
+    throw new Error(
+      "Прошло больше 24 часов с последнего сообщения клиента. По правилам WhatsApp можно написать только через одобренный шаблон (или ответить из приложения WhatsApp Business).",
+    );
+  }
+}
+
+/** Sends a media-library item and records it in the chat history. */
+export async function sendLibraryAndStore(waId: string, mediaId: number, sender: "ai" | "owner") {
+  try {
+    const { waId: msgId, item } = await sendLibraryItem(waId, mediaId);
+    await insertMessage({
+      wa_message_id: msgId || null,
+      wa_id: waId,
+      direction: "out",
+      sender,
+      type: item.kind,
+      text: mediaLabel(item.kind, item.title),
+      status: "sent",
+    });
+  } catch (e) {
+    await insertMessage({ wa_id: waId, direction: "out", sender, type: "document", text: `📎 файл #${mediaId}`, status: "failed", error: (e as Error).message });
+    throw e;
+  }
+  await updateContact(waId, { last_message_at: new Date() });
+}
+
+/** Owner sends a file from the panel (a one-off attachment or a media-library item). */
+export async function ownerSendFile(
+  waId: string,
+  file: { libraryId?: number; data?: Buffer; mime?: string; filename?: string; caption?: string },
+) {
+  await requireOpenWindow(waId);
+  if (file.libraryId) {
+    await sendLibraryAndStore(waId, file.libraryId, "owner");
+  } else if (file.data && file.mime) {
+    const r = await sendOneOffFile(waId, { data: file.data, mime: file.mime, filename: file.filename ?? "", caption: file.caption });
+    await insertMessage({
+      wa_message_id: r.waId || null,
+      wa_id: waId,
+      direction: "out",
+      sender: "owner",
+      type: r.kind,
+      text: mediaLabel(r.kind, file.caption?.trim() || r.filename),
+      status: "sent",
+    });
+    await updateContact(waId, { last_message_at: new Date() });
+  } else {
+    throw new Error("Файл не выбран");
+  }
   await ownerTookOver(waId);
 }
 

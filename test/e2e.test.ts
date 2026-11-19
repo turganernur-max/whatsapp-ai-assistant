@@ -14,6 +14,7 @@ const { updateSettings, clearSettingsCache } = await import("../src/settings.js"
 
 // ---------- Fake WhatsApp Graph API ----------
 const sent: any[] = [];
+const uploads: string[] = [];
 let failSends = false;
 const graph = http.createServer((req, res) => {
   let body = "";
@@ -21,6 +22,11 @@ const graph = http.createServer((req, res) => {
   req.on("end", () => {
     assert.equal(req.headers.authorization, "Bearer EAATESTFAKE00000000000000000");
     res.setHeader("Content-Type", "application/json");
+    if (req.method === "POST" && req.url?.endsWith("/PN1/media")) {
+      assert.match(String(req.headers["content-type"]), /multipart\/form-data/);
+      uploads.push(body.length > 0 ? "ok" : "empty");
+      return res.end(JSON.stringify({ id: "MEDIA" + uploads.length }));
+    }
     if (req.method === "POST" && req.url?.endsWith("/PN1/messages")) {
       const b = JSON.parse(body);
       if (b.status === "read") return res.end('{"success":true}');
@@ -128,11 +134,12 @@ after(async () => {
 
 beforeEach(async () => {
   sent.length = 0;
+  uploads.length = 0;
   claudeCalls.length = 0;
   failSends = false;
   nextReply = { reply: "Здравствуйте! Стрижка стоит 5000 ₸.", handoff: false, handoff_reason: "" };
   const d = getDb();
-  await d.exec(`DELETE FROM messages; DELETE FROM contacts; DELETE FROM usage; DELETE FROM events; DELETE FROM settings; DELETE FROM knowledge;`);
+  await d.exec(`DELETE FROM messages; DELETE FROM contacts; DELETE FROM usage; DELETE FROM events; DELETE FROM settings; DELETE FROM knowledge; DELETE FROM media;`);
   clearSettingsCache();
   await updateSettings({ ai_enabled: true });
 });
@@ -381,4 +388,63 @@ test("Kazakhstan test-number quirk: retries with the allow-list spelling (7 8707
   assert.equal(sent[0].to, "787070000001");
   const [m] = await getDb().query(`SELECT status FROM messages WHERE wa_id = '77070000001' AND direction = 'out'`);
   assert.equal(m.status, "sent");
+});
+
+// 1x1 PNG
+const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+test("media library: AI sends a photo from the library, upload is reused", async () => {
+  const h = await login();
+  const up = await app.inject({ method: "POST", url: "/api/media", headers: h, payload: { title: "Прайс", description: "когда спрашивают цены", filename: "price.png", mime: "image/png", data: PNG_B64 } });
+  assert.equal(up.statusCode, 200, up.body);
+  const id = up.json().id;
+  const list = await app.inject({ url: "/api/media", headers: h });
+  assert.equal(list.json().items.length, 1);
+  assert.equal(list.json().items[0].kind, "image");
+  const file = await app.inject({ url: `/api/media/${id}/file`, headers: h });
+  assert.equal(file.statusCode, 200);
+  assert.equal(file.headers["content-type"], "image/png");
+
+  nextReply = { reply: "Вот наш прайс 👇", handoff: false, handoff_reason: "", send_media: [id, 9999] };
+  await postWebhook(inbound("77010000020", "Бағасы қанша?"));
+  await drain();
+  assert.match(claudeCalls[0].system[0].text, /ID \d+: фото «Прайс» — когда спрашивают цены/);
+  assert.deepEqual(claudeCalls[0].output_config.format.schema.required.includes("send_media"), true);
+  assert.equal(sent.length, 2, "text + one image (unknown id 9999 ignored)");
+  assert.equal(sent[1].type, "image");
+  assert.equal(sent[1].image.id, "MEDIA1");
+  assert.equal(uploads.length, 1);
+
+  await postWebhook(inbound("77010000020", "Тағы жіберіңізші"));
+  await drain();
+  assert.equal(uploads.length, 1, "cached WhatsApp media id reused");
+  const rows = await getDb().query(`SELECT sender, type, text FROM messages WHERE wa_id = '77010000020' AND type = 'image'`);
+  assert.equal(rows[0].text, "📷 Прайс");
+});
+
+test("owner sends a photo from the panel and from the library; bad files rejected", async () => {
+  await updateSettings({ ai_enabled: false });
+  await postWebhook(inbound("77010000021", "Фото жіберіңіз"));
+  await drain();
+  const h = await login();
+  const one = await app.inject({ method: "POST", url: "/api/contacts/77010000021/send-file", headers: h, payload: { mime: "image/png", filename: "a.png", data: PNG_B64, caption: "Міне" } });
+  assert.equal(one.statusCode, 200, one.body);
+  assert.equal(sent.at(-1).type, "image");
+  assert.equal(sent.at(-1).image.caption, "Міне");
+
+  const heic = await app.inject({ method: "POST", url: "/api/media", headers: h, payload: { title: "x", mime: "image/heic", data: PNG_B64 } });
+  assert.equal(heic.statusCode, 400);
+  const big = Buffer.alloc(17 * 1024 * 1024, 1).toString("base64");
+  const vid = await app.inject({ method: "POST", url: "/api/media", headers: h, payload: { title: "v", mime: "video/mp4", data: big } });
+  assert.equal(vid.statusCode, 400);
+  assert.match(vid.json().error, /16 МБ/);
+
+  const doc = await app.inject({ method: "POST", url: "/api/media", headers: h, payload: { title: "Видео зала", filename: "zal.mov", mime: "video/quicktime", data: PNG_B64 } });
+  assert.equal(doc.json().kind, "document", ".mov goes as a document");
+  const lib = await app.inject({ method: "POST", url: "/api/contacts/77010000021/send-file", headers: h, payload: { library_id: doc.json().id } });
+  assert.equal(lib.statusCode, 200, lib.body);
+  assert.equal(sent.at(-1).type, "document");
+  assert.equal(sent.at(-1).document.filename, "zal.mov");
+  const [c] = await getDb().query(`SELECT paused_until FROM contacts WHERE wa_id = '77010000021'`);
+  assert.ok(new Date(c.paused_until) > new Date(), "owner takeover pauses AI");
 });

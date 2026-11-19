@@ -9,7 +9,8 @@ import { getDb } from "./db.js";
 import { COOKIE, SESSION_MAX_AGE, checkPassword, issueToken, loginBlocked, loginFailed, loginOk, verifyToken } from "./auth.js";
 import { getSettings, updateSettings, SettingsSchema, MODELS } from "./settings.js";
 import * as wa from "./whatsapp.js";
-import { handleEvents, ownerSend, schedule } from "./processor.js";
+import { handleEvents, ownerSend, ownerSendFile, schedule } from "./processor.js";
+import { addMedia, getMediaFile, listMedia, MediaError } from "./media.js";
 import { generateReply, AiError } from "./ai.js";
 import { costUsd } from "./pricing.js";
 import { getContact, getKnowledge, monthSpendUsd, recordUsage, updateContact } from "./store.js";
@@ -62,7 +63,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (!req.url.startsWith("/webhook")) {
       reply.header(
         "Content-Security-Policy",
-        "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+        "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
       );
     }
     if (req.url.startsWith("/api/")) reply.header("Cache-Control", "no-store");
@@ -304,6 +305,85 @@ export async function buildServer(): Promise<FastifyInstance> {
       return { ok: true };
     });
 
+    // ----- Media library (photos, videos, files the AI may send) -----
+    const UPLOAD_LIMIT = 25 * 1024 * 1024; // base64 of a 16 MB file + JSON overhead
+    const decodeFile = (b64: string) => {
+      const data = Buffer.from(b64, "base64");
+      if (!data.length) throw new MediaError("Пустой файл");
+      return data;
+    };
+    api.get("/api/media", async () => {
+      const items = await listMedia();
+      return { items, total_bytes: items.reduce((a, i) => a + Number(i.size), 0) };
+    });
+    api.post("/api/media", { bodyLimit: UPLOAD_LIMIT }, async (req, reply) => {
+      const b = z
+        .object({
+          title: z.string().trim().min(1).max(200),
+          description: z.string().max(1000).default(""),
+          filename: z.string().max(200).default(""),
+          mime: z.string().min(3).max(100),
+          data: z.string().min(1),
+        })
+        .parse(req.body);
+      try {
+        return await addMedia({ title: b.title, description: b.description, filename: b.filename, mime: b.mime, data: decodeFile(b.data) });
+      } catch (e) {
+        if (e instanceof MediaError) return reply.code(400).send({ error: e.message });
+        throw e;
+      }
+    });
+    api.put("/api/media/:id", async (req, reply) => {
+      const b = z
+        .object({ title: z.string().trim().min(1).max(200).optional(), description: z.string().max(1000).optional(), enabled: z.boolean().optional() })
+        .strict()
+        .parse(req.body);
+      const [row] = await getDb().query(
+        `UPDATE media SET title = COALESCE($2, title), description = COALESCE($3, description), enabled = COALESCE($4, enabled)
+         WHERE id = $1 RETURNING id, title, description, kind, mime, filename, size, enabled, created_at`,
+        [Number((req.params as any).id), b.title ?? null, b.description ?? null, b.enabled ?? null],
+      );
+      if (!row) return reply.code(404).send({ error: "Не найдено" });
+      return row;
+    });
+    api.delete("/api/media/:id", async (req) => {
+      await getDb().query(`DELETE FROM media WHERE id = $1`, [Number((req.params as any).id)]);
+      return { ok: true };
+    });
+    api.get("/api/media/:id/file", async (req, reply) => {
+      const f = await getMediaFile(Number((req.params as any).id));
+      if (!f) return reply.code(404).send({ error: "Не найдено" });
+      return reply
+        .header("Content-Type", f.mime)
+        .header("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(f.filename)}`)
+        .header("Cache-Control", "private, max-age=3600")
+        .send(f.data);
+    });
+    api.post("/api/contacts/:waId/send-file", { bodyLimit: UPLOAD_LIMIT }, async (req, reply) => {
+      const { waId } = req.params as { waId: string };
+      const b = z
+        .object({
+          library_id: z.number().int().positive().optional(),
+          filename: z.string().max(200).optional(),
+          mime: z.string().max(100).optional(),
+          data: z.string().optional(),
+          caption: z.string().max(1024).optional(),
+        })
+        .parse(req.body);
+      try {
+        await ownerSendFile(waId, {
+          libraryId: b.library_id,
+          data: b.data ? decodeFile(b.data) : undefined,
+          mime: b.mime,
+          filename: b.filename,
+          caption: b.caption,
+        });
+        return { ok: true };
+      } catch (e) {
+        return reply.code(400).send({ error: (e as Error).message });
+      }
+    });
+
     // ----- Test the AI without sending anything to WhatsApp -----
     api.post("/api/ai/test", async (req, reply) => {
       const b = z
@@ -315,12 +395,14 @@ export async function buildServer(): Promise<FastifyInstance> {
       }
       try {
         const kb = await getKnowledge();
+        const media = (await listMedia(true)).map((m) => ({ id: m.id, title: m.title, description: m.description, kind: m.kind }));
         const r = await generateReply(
           s,
           kb,
           [],
           b.messages.map((m) => ({ sender: m.from === "client" ? "contact" : "ai", text: m.text })),
           [],
+          media,
         );
         const cost = costUsd(r.model, r.usage);
         await recordUsage({
@@ -333,7 +415,8 @@ export async function buildServer(): Promise<FastifyInstance> {
           cache_write_tokens: r.usage.cache_creation_input_tokens,
           cost_usd: cost,
         });
-        return { reply: r.reply, handoff: r.handoff, handoff_reason: r.handoffReason, cost_usd: cost, model: r.model };
+        const files = r.mediaIds.map((id) => media.find((m) => m.id === id)?.title ?? `#${id}`);
+        return { reply: r.reply, files, handoff: r.handoff, handoff_reason: r.handoffReason, cost_usd: cost, model: r.model };
       } catch (e) {
         return reply.code(400).send({ error: e instanceof AiError ? e.message : (e as Error).message });
       }

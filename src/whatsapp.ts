@@ -102,15 +102,15 @@ export function alternateRecipient(to: string): string | null {
 }
 const recipientOverride = new Map<string, string>();
 
-export async function sendText(to: string, body: string): Promise<string> {
+/** Sends any message payload to `to`, retrying with the allow-list spelling on #131030. */
+async function sendMessage(to: string, payload: Record<string, unknown>): Promise<string> {
   const send = async (recipient: string) => {
     await pace();
     const res = await graph("POST", `${config.waPhoneNumberId}/messages`, {
       messaging_product: "whatsapp",
       recipient_type: "individual",
       to: recipient,
-      type: "text",
-      text: { body, preview_url: false },
+      ...payload,
     });
     return res?.messages?.[0]?.id ?? "";
   };
@@ -124,6 +124,59 @@ export async function sendText(to: string, body: string): Promise<string> {
     recipientOverride.set(to, alt);
     return id;
   }
+}
+
+export async function sendText(to: string, body: string): Promise<string> {
+  return sendMessage(to, { type: "text", text: { body, preview_url: false } });
+}
+
+export type MediaKind = "image" | "video" | "document";
+
+/** WhatsApp limits and accepted formats for media sent by a business. */
+export const MEDIA_RULES: Record<MediaKind, { maxBytes: number; mimes: string[] }> = {
+  image: { maxBytes: 5 * 1024 * 1024, mimes: ["image/jpeg", "image/png"] },
+  video: { maxBytes: 16 * 1024 * 1024, mimes: ["video/mp4", "video/3gpp"] },
+  document: { maxBytes: 16 * 1024 * 1024, mimes: [] }, // any type
+};
+
+/** Uploads a file to WhatsApp and returns its media id (valid ~30 days). */
+export async function uploadMedia(data: Buffer, mimeType: string, filename: string): Promise<string> {
+  if (!config.waToken) throw new WhatsAppError("WHATSAPP_TOKEN не настроен", 0);
+  const problem = tokenProblem(config.waToken);
+  if (problem) throw new WhatsAppError(problem, 0);
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("type", mimeType);
+  form.append("file", new Blob([new Uint8Array(data)], { type: mimeType }), filename);
+  const res = await fetch(graphUrl(`${config.waPhoneNumberId}/media`), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${config.waToken}` },
+    body: form,
+    signal: AbortSignal.timeout(120_000),
+  });
+  const json: any = await res.json().catch(() => ({}));
+  if (!res.ok || !json?.id) {
+    const err = json?.error ?? {};
+    throw new WhatsAppError(
+      [err.message, err.error_data?.details].filter(Boolean).join(" — ") || `Не удалось загрузить файл: HTTP ${res.status}`,
+      res.status,
+      err.code,
+    );
+  }
+  return String(json.id);
+}
+
+export async function sendMediaMessage(
+  to: string,
+  kind: MediaKind,
+  mediaId: string,
+  caption?: string,
+  filename?: string,
+): Promise<string> {
+  const body: Record<string, unknown> = { id: mediaId };
+  if (caption) body.caption = caption.slice(0, 1024);
+  if (kind === "document" && filename) body.filename = filename;
+  return sendMessage(to, { type: kind, [kind]: body });
 }
 
 export async function sendTemplate(to: string, name: string, languageCode: string): Promise<string> {

@@ -6,6 +6,59 @@
     String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const money = (v) => "$" + Number(v || 0).toFixed(Number(v || 0) < 1 ? 4 : 2);
   let pollTimer = null;
+
+  // ---------------- Files ----------------
+  const MB = 1024 * 1024;
+  const readAsBase64 = (blob) =>
+    new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).split(",")[1] || "");
+      r.onerror = () => reject(new Error("Не удалось прочитать файл"));
+      r.readAsDataURL(blob);
+    });
+  // iPhone photos are often HEIC and large: re-encode to JPEG (max 1600 px) so WhatsApp accepts them.
+  async function toJpeg(file) {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = await new Promise((resolve, reject) => {
+        const i = new Image();
+        i.onload = () => resolve(i);
+        i.onerror = () => reject(new Error("Не удалось открыть фото"));
+        i.src = url;
+      });
+      const scale = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.naturalWidth * scale);
+      c.height = Math.round(img.naturalHeight * scale);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      const blob = await new Promise((res) => c.toBlob(res, "image/jpeg", 0.85));
+      if (!blob) throw new Error("Не удалось сжать фото");
+      return blob;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+  /** Prepares a picked file for upload: {mime, filename, data(base64), note}. */
+  async function preparePickedFile(file) {
+    let blob = file;
+    let mime = file.type || "application/octet-stream";
+    let filename = file.name || "file";
+    let note = "";
+    if (mime.startsWith("image/")) {
+      if (!["image/jpeg", "image/png"].includes(mime) || file.size > 3 * MB) {
+        blob = await toJpeg(file);
+        mime = "image/jpeg";
+        filename = filename.replace(/\.[^.]+$/, "") + ".jpg";
+      }
+    } else if (mime.startsWith("video/")) {
+      if (file.size > 16 * MB) throw new Error(`Видео ${(file.size / MB).toFixed(1)} МБ — WhatsApp принимает до 16 МБ. Обрежьте видео в «Фото» (Править) и попробуйте снова.`);
+      if (!["video/mp4", "video/3gpp"].includes(mime)) note = "Видео в формате " + (mime.split("/")[1] || "?").toUpperCase() + " будет отправлено как файл (WhatsApp показывает как видео только MP4).";
+    } else if (file.size > 16 * MB) {
+      throw new Error("Файл больше 16 МБ");
+    }
+    return { mime, filename, data: await readAsBase64(blob), note };
+  }
+  const kindIcon = (k) => (k === "image" ? "📷" : k === "video" ? "🎬" : "📎");
   let currentRoute = "";
 
   // ---------------- API ----------------
@@ -211,6 +264,10 @@
       <div class="chat-actions" id="chat-actions"></div>
       <div class="chat" id="chat"></div>
       <div class="composer">
+        <div class="row attach-row">
+          <label class="btn small-btn">📎 Фото / видео<input type="file" id="attach" accept="image/*,video/*,application/pdf" class="vh"></label>
+          <select id="lib-select" class="grow lib-select"><option value="">🖼 Из медиатеки…</option></select>
+        </div>
         <div class="row"><textarea id="reply" class="grow" placeholder="Ответить самому (AI встанет на паузу)"></textarea>
         <button class="btn primary" id="send">➤</button></div>
       </div>`;
@@ -284,6 +341,55 @@
         $("#send").disabled = false;
       }
     });
+    api("GET", "/api/media")
+      .then(({ items }) => {
+        const sel = $("#lib-select");
+        if (!sel) return;
+        items.filter((i) => i.enabled).forEach((i) => {
+          const o = document.createElement("option");
+          o.value = i.id;
+          o.textContent = `${kindIcon(i.kind)} ${i.title}`;
+          sel.appendChild(o);
+        });
+      })
+      .catch(() => {});
+    const afterFileSent = async () => {
+      data = await load();
+      paint();
+      window.scrollTo(0, document.body.scrollHeight);
+      toast("Файл отправлен. AI на паузе для этого клиента.");
+    };
+    $("#lib-select").addEventListener("change", async (e) => {
+      const id = Number(e.target.value);
+      if (!id) return;
+      const title = e.target.selectedOptions[0].textContent;
+      e.target.value = "";
+      if (!confirm(`Отправить клиенту ${title}?`)) return;
+      try {
+        toast("Отправляю…");
+        await api("POST", `/api/contacts/${encodeURIComponent(waId)}/send-file`, { library_id: id });
+        await afterFileSent();
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+    $("#attach").addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      e.target.value = "";
+      if (!file) return;
+      try {
+        toast("Готовлю файл…");
+        const f = await preparePickedFile(file);
+        const caption = $("#reply").value.trim();
+        if (!confirm(`Отправить клиенту «${file.name || "файл"}»${caption ? " с подписью из поля ответа" : ""}?${f.note ? "\n\n" + f.note : ""}`)) return;
+        toast("Отправляю…");
+        await api("POST", `/api/contacts/${encodeURIComponent(waId)}/send-file`, { mime: f.mime, filename: f.filename, data: f.data, caption: caption || undefined });
+        $("#reply").value = "";
+        await afterFileSent();
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
     const myRoute = currentRoute;
     poll(async () => {
       if (currentRoute !== myRoute) return;
@@ -355,7 +461,10 @@
           from: "assistant",
           text: r.reply || "(пусто)",
           handoff: r.handoff,
-          meta: (r.handoff ? "➡️ передано владельцу: " + r.handoff_reason + " · " : "") + money(r.cost_usd),
+          meta:
+            (r.files && r.files.length ? "📎 отправит: " + r.files.join(", ") + " · " : "") +
+            (r.handoff ? "➡️ передано владельцу: " + r.handoff_reason + " · " : "") +
+            money(r.cost_usd),
         });
         paintTest();
       } catch (err) {
@@ -448,6 +557,92 @@
       if (t.dataset.en) {
         await api("PUT", `/api/knowledge/${t.dataset.en}`, { enabled: t.checked }).catch((err) => toast(err.message, true));
       }
+    });
+    const mediaBox = document.createElement("div");
+    mediaBox.id = "media-box";
+    view.appendChild(mediaBox);
+    await renderMediaLibrary(mediaBox);
+  }
+
+  async function renderMediaLibrary(box) {
+    const { items, total_bytes } = await api("GET", "/api/media");
+    box.innerHTML = `
+      <h2>📷 Фото и видео для клиентов</h2>
+      <div class="banner ok small">AI отправляет клиенту эти файлы сам, когда это уместно. В описании напишите, <b>когда</b> отправлять — например: «клиент спрашивает цены», «просит показать зал». Занято ${(total_bytes / MB).toFixed(1)} из 200 МБ.</div>
+      <div class="card">
+        <h3>Добавить файл</h3>
+        <label class="field">Название</label><input type="text" id="m-title" placeholder="Например: Прайс-лист">
+        <label class="field">Когда отправлять (для AI)</label><textarea id="m-desc" class="short" placeholder="Например: когда клиент спрашивает цены или услуги"></textarea>
+        <label class="field">Фото (до 5 МБ), видео MP4 (до 16 МБ) или PDF</label>
+        <input type="file" id="m-file" accept="image/*,video/*,application/pdf">
+        <p id="m-note" class="muted small"></p>
+        <button class="btn primary wide" id="m-save">Загрузить</button>
+      </div>
+      <div class="list" id="m-list">${
+        items.length
+          ? items
+              .map(
+                (i) => `<div class="item"><div class="thumb">${
+                  i.kind === "image" ? `<img src="/api/media/${i.id}/file" alt="" loading="lazy">` : `<span>${kindIcon(i.kind)}</span>`
+                }</div><div class="body">
+                  <div class="top"><span class="name">${esc(i.title)}</span><span class="time">${(i.size / MB).toFixed(1)} МБ</span></div>
+                  <div class="preview">${esc(i.description || "без описания — AI не будет знать, когда отправлять")}</div>
+                  <div class="row small">
+                    <label class="row"><input type="checkbox" data-men="${i.id}" ${i.enabled ? "checked" : ""}> AI может отправлять</label>
+                    <button class="btn" data-medit="${i.id}">Описание</button><button class="btn danger" data-mdel="${i.id}">Удалить</button>
+                  </div></div></div>`,
+              )
+              .join("")
+          : '<div class="item"><div class="body muted">Файлов пока нет.</div></div>'
+      }</div>`;
+    $("#m-file").addEventListener("change", (e) => {
+      const f = e.target.files[0];
+      $("#m-note").textContent = "";
+      if (!f) return;
+      if (!$("#m-title").value) $("#m-title").value = (f.name || "").replace(/\.[^.]+$/, "");
+      if (f.type.startsWith("video/") && !["video/mp4", "video/3gpp"].includes(f.type))
+        $("#m-note").textContent = "Это видео не в формате MP4 — клиент получит его как файл. Чтобы было видео, нужен MP4.";
+    });
+    $("#m-save").addEventListener("click", async () => {
+      const file = $("#m-file").files[0];
+      const title = $("#m-title").value.trim();
+      if (!file) return toast("Выберите файл", true);
+      if (!title) return toast("Напишите название", true);
+      const btn = $("#m-save");
+      btn.disabled = true;
+      btn.textContent = "Загружаю…";
+      try {
+        const f = await preparePickedFile(file);
+        await api("POST", "/api/media", { title, description: $("#m-desc").value, filename: f.filename, mime: f.mime, data: f.data });
+        toast("Загружено ✓");
+        await renderMediaLibrary(box);
+      } catch (err) {
+        toast(err.message, true);
+        btn.disabled = false;
+        btn.textContent = "Загрузить";
+      }
+    });
+    $("#m-list").addEventListener("click", async (e) => {
+      const t = e.target;
+      try {
+        if (t.dataset.mdel) {
+          if (!confirm("Удалить файл из медиатеки?")) return;
+          await api("DELETE", `/api/media/${t.dataset.mdel}`);
+          await renderMediaLibrary(box);
+        } else if (t.dataset.medit) {
+          const it = items.find((i) => String(i.id) === t.dataset.medit);
+          const d = prompt("Когда AI должен отправлять этот файл?", it.description || "");
+          if (d === null) return;
+          await api("PUT", `/api/media/${it.id}`, { description: d });
+          await renderMediaLibrary(box);
+        }
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+    $("#m-list").addEventListener("change", async (e) => {
+      const t = e.target;
+      if (t.dataset.men) await api("PUT", `/api/media/${t.dataset.men}`, { enabled: t.checked }).catch((err) => toast(err.message, true));
     });
   }
 

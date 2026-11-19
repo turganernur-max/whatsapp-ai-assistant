@@ -128,6 +128,20 @@ const MIGRATIONS: string[] = [
      detail TEXT
    );
    CREATE INDEX IF NOT EXISTS events_created_idx ON events (created_at);`,
+  `CREATE TABLE IF NOT EXISTS media (
+     id SERIAL PRIMARY KEY,
+     title TEXT NOT NULL,
+     description TEXT NOT NULL DEFAULT '',
+     kind TEXT NOT NULL,                -- image | video | document
+     mime TEXT NOT NULL,
+     filename TEXT NOT NULL,
+     size INTEGER NOT NULL,
+     data BYTEA NOT NULL,
+     enabled BOOLEAN NOT NULL DEFAULT TRUE,
+     wa_media_id TEXT,
+     wa_uploaded_at TIMESTAMPTZ,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+   );`,
 ];
 
 async function migrate(d: Db) {
