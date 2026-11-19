@@ -89,16 +89,41 @@ export function splitMessage(text: string, max = 4000): string[] {
   return out;
 }
 
+/**
+ * Meta's test-number allow list stores Kazakhstan/Russia numbers with an extra "8"
+ * after the country code (7 8707… instead of 7 707…), while incoming messages use the
+ * normal wa_id. When Meta answers #131030 "Recipient phone number not in allowed list",
+ * we retry with that alternate spelling and remember which one works.
+ */
+export function alternateRecipient(to: string): string | null {
+  if (/^7[67]\d{9}$/.test(to)) return "78" + to.slice(1);
+  if (/^78[67]\d{9}$/.test(to)) return "7" + to.slice(2);
+  return null;
+}
+const recipientOverride = new Map<string, string>();
+
 export async function sendText(to: string, body: string): Promise<string> {
-  await pace();
-  const res = await graph("POST", `${config.waPhoneNumberId}/messages`, {
-    messaging_product: "whatsapp",
-    recipient_type: "individual",
-    to,
-    type: "text",
-    text: { body, preview_url: false },
-  });
-  return res?.messages?.[0]?.id ?? "";
+  const send = async (recipient: string) => {
+    await pace();
+    const res = await graph("POST", `${config.waPhoneNumberId}/messages`, {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: recipient,
+      type: "text",
+      text: { body, preview_url: false },
+    });
+    return res?.messages?.[0]?.id ?? "";
+  };
+  const first = recipientOverride.get(to) ?? to;
+  try {
+    return await send(first);
+  } catch (e) {
+    const alt = first === to ? alternateRecipient(to) : null;
+    if (!(e instanceof WhatsAppError) || e.code !== 131030 || !alt) throw e;
+    const id = await send(alt);
+    recipientOverride.set(to, alt);
+    return id;
+  }
 }
 
 export async function sendTemplate(to: string, name: string, languageCode: string): Promise<string> {

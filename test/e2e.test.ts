@@ -24,6 +24,10 @@ const graph = http.createServer((req, res) => {
     if (req.method === "POST" && req.url?.endsWith("/PN1/messages")) {
       const b = JSON.parse(body);
       if (b.status === "read") return res.end('{"success":true}');
+      if (b.to === "77070000001") {
+        res.statusCode = 400;
+        return res.end(JSON.stringify({ error: { message: "(#131030) Recipient phone number not in allowed list", code: 131030 } }));
+      }
       if (failSends) {
         res.statusCode = 400;
         return res.end(JSON.stringify({ error: { message: "Recipient not allowed", code: 131030 } }));
@@ -368,4 +372,13 @@ test("webhook stats count accepted and rejected deliveries", async () => {
   const h = await login();
   const st = (await app.inject({ url: "/api/whatsapp/status", headers: h })).json();
   assert.equal(st.webhook.badSignatureCount, webhookStats.badSignatureCount);
+});
+
+test("Kazakhstan test-number quirk: retries with the allow-list spelling (7 8707…)", async () => {
+  await postWebhook(inbound("77070000001", "Сәлем"));
+  await drain();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to, "787070000001");
+  const [m] = await getDb().query(`SELECT status FROM messages WHERE wa_id = '77070000001' AND direction = 'out'`);
+  assert.equal(m.status, "sent");
 });

@@ -103,3 +103,10 @@ test("token pasted together with Meta's curl example is cleaned; secrets are red
   assert.ok(!redact(`Headers.append: "Bearer ${tok}" is invalid`).includes(tok));
   assert.ok(!redact(`token ${tok} here`).includes(tok));
 });
+
+test("alternate recipient spelling for KZ/RU numbers", async () => {
+  const { alternateRecipient } = await import("../src/whatsapp.js");
+  assert.equal(alternateRecipient("77071234567"), "787071234567");
+  assert.equal(alternateRecipient("787071234567"), "77071234567");
+  assert.equal(alternateRecipient("15551234567"), null);
+});
