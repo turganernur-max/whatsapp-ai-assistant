@@ -37,6 +37,8 @@ export const SettingsSchema = z.object({
   followup_enabled: z.boolean(),
   followup_hours: z.number().min(0.5).max(20),
   followup_max: z.number().int().min(1).max(10),
+  human_style: z.boolean(),
+  human_delay: z.boolean(),
   template_price_usd: z.number().min(0).max(5),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -76,6 +78,8 @@ export const DEFAULT_SETTINGS: Settings = {
   followup_enabled: false,
   followup_hours: 3,
   followup_max: 4,
+  human_style: true,
+  human_delay: true,
   template_price_usd: 0.05,
 };
 

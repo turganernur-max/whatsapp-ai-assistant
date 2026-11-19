@@ -352,7 +352,18 @@ export async function processContact(waId: string): Promise<void> {
     text = `${s.disclosure_text.trim()}\n\n${text}`;
   }
   try {
-    if (text.trim()) await sendAndStore(waId, text, "ai");
+    if (text.trim()) {
+      if (s.human_style) {
+        // Send like a person: a few short bubbles with typing pauses in between.
+        const bubbles = humanBubbles(text);
+        for (let i = 0; i < bubbles.length; i++) {
+          if (s.human_delay) await humanPause(bubbles[i], i === 0 ? newest.wa_message_id : null);
+          await sendAndStore(waId, bubbles[i], "ai");
+        }
+      } else {
+        await sendAndStore(waId, text, "ai");
+      }
+    }
     await release(ids, "processed");
     await updateContact(waId, { disclosed: fresh.disclosed || s.disclosure_enabled, unread: 0 });
   } catch (e) {
@@ -375,6 +386,21 @@ export async function processContact(waId: string): Promise<void> {
     }
     await flagAttention(waId, decision.handoffReason || "Нужен владелец", "handoff");
   }
+}
+
+/** Splits a reply on blank lines into at most 3 chat bubbles (keeps it whole if parts would be tiny or many). */
+export function humanBubbles(text: string): string[] {
+  const parts = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  if (parts.length <= 1 || parts.length > 3) return [text.trim()];
+  return parts;
+}
+
+/** Waits roughly as long as a person would need to type the message (2–9 s), showing "typing…". */
+async function humanPause(text: string, replyToWaId: string | null) {
+  const ms = Math.min(9000, 1500 + text.length * 35) * config.humanDelayScale;
+  if (ms <= 0) return;
+  if (replyToWaId) await wa.markReadAndTyping(replyToWaId, true);
+  await new Promise((r) => setTimeout(r, ms));
 }
 
 /** Sends text (split into chunks if needed) and stores each chunk. Throws on failure after storing it as failed. */

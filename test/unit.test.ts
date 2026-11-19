@@ -148,3 +148,10 @@ test("handoff mode changes the rules given to the AI", async () => {
   assert.match(text("strict"), /ты не уверен/);
   assert.doesNotMatch(text("rare"), /\{HANDOFF_RULES\}/);
 });
+
+test("humanBubbles splits on blank lines into at most 3 bubbles", async () => {
+  const { humanBubbles } = await import("../src/processor.js");
+  assert.deepEqual(humanBubbles("Сәлем!\n\nҚалайсыз?"), ["Сәлем!", "Қалайсыз?"]);
+  assert.deepEqual(humanBubbles("бір жол\nекінші жол"), ["бір жол\nекінші жол"]);
+  assert.equal(humanBubbles("a\n\nb\n\nc\n\nd").length, 1, "too many parts → keep as one message");
+});

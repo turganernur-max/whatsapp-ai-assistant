@@ -824,6 +824,8 @@
         <input type="text" id="timezone" value="${esc(s.timezone)}">
       </div>
       <div class="card">
+        ${chk("human_style", "Писать как живой человек", "Коротко, без шаблонных фраз робота, от лица бизнеса; длинный ответ — 2–3 сообщениями. Если клиент прямо спросит «вы бот?», AI честно ответит.")}
+        ${chk("human_delay", "Пауза «печатает…» перед ответом", "2–9 секунд в зависимости от длины, как у человека")}
         ${chk("disclosure_enabled", "Сообщать, что отвечает AI", "Первое сообщение каждому новому клиенту начинается с этого текста")}
         <textarea id="disclosure_text">${esc(s.disclosure_text)}</textarea>
         ${chk("pause_after_handoff", "Пауза AI после передачи владельцу", "AI замолкает в этом диалоге, пока вы не ответите или не вернёте AI")}
@@ -855,6 +857,8 @@
           history_messages: num("history_messages"),
           timezone: $("#timezone").value.trim() || "Asia/Almaty",
           disclosure_enabled: $("#disclosure_enabled").checked,
+          human_style: $("#human_style").checked,
+          human_delay: $("#human_delay").checked,
           disclosure_text: $("#disclosure_text").value,
           pause_after_handoff: $("#pause_after_handoff").checked,
           handoff_message: $("#handoff_message").value,

@@ -131,6 +131,7 @@ before(async () => {
     adminPassword: "pass123",
     sessionSecret: "s".repeat(32),
     debounceMs: 30,
+    humanDelayScale: 0,
     ntfyTopic: "",
   });
   await initDb(process.env.TEST_DATABASE_URL ? { url: process.env.TEST_DATABASE_URL } : { dir: "memory" });
@@ -153,7 +154,7 @@ beforeEach(async () => {
   const d = getDb();
   await d.exec(`DELETE FROM messages; DELETE FROM contacts; DELETE FROM usage; DELETE FROM events; DELETE FROM settings; DELETE FROM knowledge; DELETE FROM media; DELETE FROM broadcasts;`);
   clearSettingsCache();
-  await updateSettings({ ai_enabled: true });
+  await updateSettings({ ai_enabled: true, human_style: false });
 });
 
 test("webhook verification handshake", async () => {
@@ -650,4 +651,20 @@ test("persistent reminders per client: repeat until reply, last one before the 2
   await aiAgo(5); await clientAgo(5);
   assert.equal(await runFollowups(), 0);
   await updateSettings({ followup_enabled: false });
+});
+
+test("human style: no robotic self-intro rule, honest if asked, reply split into short bubbles", async () => {
+  await updateSettings({ human_style: true, disclosure_enabled: false });
+  nextReply = { reply: "Иә, бар 👍\n\nҚай күнге ыңғайлы?", handoff: false, handoff_reason: "", send_media: [] };
+  await postWebhook(inbound("77010000060", "Ертеңге орын бар ма?"));
+  await drain();
+  assert.deepEqual(sent.map((m) => m.text.body), ["Иә, бар 👍", "Қай күнге ыңғайлы?"]);
+  const sys = claudeCalls.at(-1).system[0].text as string;
+  assert.match(sys, /КАК ЖИВОЙ МЕНЕДЖЕР/);
+  assert.match(sys, /сам не заявляй, что ты бот/);
+  assert.match(sys, /никогда не отрицай/);
+  await updateSettings({ human_style: false });
+  await postWebhook(inbound("77010000061", "Сәлем"));
+  await drain();
+  assert.doesNotMatch(claudeCalls.at(-1).system[0].text, /КАК ЖИВОЙ МЕНЕДЖЕР/);
 });

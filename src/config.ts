@@ -60,6 +60,8 @@ export const config = {
 
   // Message batching: wait this long for follow-up messages before answering
   debounceMs: Number(env("DEBOUNCE_MS", "4000")),
+  // Human-like pause before sending (scaled; 0 disables — used in tests)
+  humanDelayScale: Number(env("HUMAN_DELAY_SCALE", "1")),
 };
 
 export function missingRequired(): string[] {
