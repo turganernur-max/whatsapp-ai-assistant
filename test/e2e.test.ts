@@ -475,3 +475,17 @@ test("owner sends a photo from the panel and from the library; bad files rejecte
   const [c] = await getDb().query(`SELECT paused_until FROM contacts WHERE wa_id = '77010000021'`);
   assert.ok(new Date(c.paused_until) > new Date(), "owner takeover pauses AI");
 });
+
+test("media chosen by the AI is still sent when the conversation is handed to the owner", async () => {
+  const h = await login();
+  const up = await app.inject({ method: "POST", url: "/api/media", headers: h, payload: { title: "Видео", description: "как работает", filename: "v.png", mime: "image/png", data: PNG_B64 } });
+  const id = up.json().id;
+  nextReply = { reply: "Мына видеодан көріңіз 👇 Толығырақ Ернұр жазады.", handoff: true, handoff_reason: "детали товара", send_media: [id] };
+  await postWebhook(inbound("77010000022", "Не сатасыңдар?"));
+  await drain();
+  assert.equal(sent.length, 2, "text + media");
+  assert.equal(sent[1].type, "image");
+  const [c] = await getDb().query(`SELECT needs_attention FROM contacts WHERE wa_id = '77010000022'`);
+  assert.equal(c.needs_attention, true);
+  assert.match(claudeCalls[0].system[0].text, /ОБЯЗАН указать его ID в send_media/);
+});
