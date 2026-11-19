@@ -137,3 +137,14 @@ test("videos are converted to WhatsApp MP4 (remux for H.264, re-encode otherwise
     assert.ok(out.length < 16 * 1024 * 1024);
   }
 });
+
+test("handoff mode changes the rules given to the AI", async () => {
+  const { buildSystem } = await import("../src/ai.js");
+  const { DEFAULT_SETTINGS } = await import("../src/settings.js");
+  const text = (mode: "rare" | "balanced" | "strict") => (buildSystem({ ...DEFAULT_SETTINGS, handoff_mode: mode }, [], [])[0] as any).text as string;
+  assert.equal(DEFAULT_SETTINGS.handoff_mode, "balanced");
+  assert.match(text("rare"), /ТОЛЬКО если/);
+  assert.match(text("balanced"), /не передавай владельцу без необходимости/);
+  assert.match(text("strict"), /ты не уверен/);
+  assert.doesNotMatch(text("rare"), /\{HANDOFF_RULES\}/);
+});

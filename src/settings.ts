@@ -33,6 +33,7 @@ export const SettingsSchema = z.object({
   retention_days: z.number().int().min(0).max(3650),
   send_read_receipts: z.boolean(),
   timezone: z.string().max(64),
+  handoff_mode: z.enum(["rare", "balanced", "strict"]),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
@@ -67,6 +68,7 @@ export const DEFAULT_SETTINGS: Settings = {
   retention_days: 365,
   send_read_receipts: true,
   timezone: "Asia/Almaty",
+  handoff_mode: "balanced",
 };
 
 let cache: Settings | null = null;

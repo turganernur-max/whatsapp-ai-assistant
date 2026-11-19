@@ -772,6 +772,12 @@
           <option value="medium" ${s.effort === "medium" ? "selected" : ""}>Средне</option>
           <option value="high" ${s.effort === "high" ? "selected" : ""}>Тщательно (дороже)</option>
         </select>
+        <label class="field">Как часто передавать разговор мне</label>
+        <select id="handoff_mode">
+          <option value="rare" ${s.handoff_mode === "rare" ? "selected" : ""}>Редко — AI ведёт разговор сам (только жалобы, возвраты, просьба позвать владельца, подтверждение заказа)</option>
+          <option value="balanced" ${s.handoff_mode === "balanced" ? "selected" : ""}>Средне — только когда без меня никак (рекомендуется)</option>
+          <option value="strict" ${s.handoff_mode === "strict" ? "selected" : ""}>Часто — при любом сомнении</option>
+        </select>
         <label class="field">Месячный лимит расходов, $ (0 = без лимита)</label>
         <input type="number" id="monthly_budget_usd" min="0" step="1" value="${s.monthly_budget_usd}">
         <label class="field">Максимальная длина ответа, символов</label>
@@ -806,6 +812,7 @@
       try {
         await api("PUT", "/api/settings", {
           model: $("#model").value,
+          handoff_mode: $("#handoff_mode").value,
           effort: $("#effort").value,
           monthly_budget_usd: num("monthly_budget_usd"),
           max_reply_chars: num("max_reply_chars"),
