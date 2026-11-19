@@ -129,6 +129,7 @@ export function buildMessages(
   history: HistoryItem[],
   images: ImageInput[],
   nowText: string,
+  serviceNote?: string,
 ): Anthropic.Beta.BetaMessageParam[] {
   const msgs: { role: "user" | "assistant"; parts: string[] }[] = [];
   for (const h of history) {
@@ -150,6 +151,7 @@ export function buildMessages(
   }
   blocks.push({ type: "text", text: String(lastUser.content) });
   blocks.push({ type: "text", text: `[служебно: текущие дата и время у владельца — ${nowText}]` });
+  if (serviceNote) blocks.push({ type: "text", text: `[служебно от владельца: ${serviceNote}]` });
   lastUser.content = blocks;
   return out;
 }
@@ -176,6 +178,7 @@ export async function generateReply(
   history: HistoryItem[],
   images: ImageInput[],
   media: MediaOption[] = [],
+  opts: { followupHours?: number } = {},
 ): Promise<AiDecision> {
   if (!config.anthropicApiKey && !client) throw new AiError("ANTHROPIC_API_KEY не настроен", false);
   const nowText = new Intl.DateTimeFormat("ru-RU", {
@@ -188,7 +191,14 @@ export async function generateReply(
     model: s.model,
     max_tokens: 8000,
     system: buildSystem(s, kb, learnedStyle, media),
-    messages: buildMessages(history, images, nowText),
+    messages: buildMessages(
+      history,
+      images,
+      nowText,
+      opts.followupHours
+        ? `клиент не отвечает уже около ${opts.followupHours} ч после твоего последнего сообщения. Напиши ОДНО короткое ненавязчивое напоминание (1–2 предложения) на языке клиента: продолжи разговор по смыслу, предложи помощь или следующий шаг. Не повторяй предыдущее сообщение, не дави, не придумывай новых фактов и скидок. Файлы не отправляй. Если по смыслу разговора напоминание неуместно (клиент попрощался, вопрос решён, разговор передан владельцу) — верни пустой reply и handoff=false.`
+        : undefined,
+    ),
     output_config: { effort: s.effort, format: { type: "json_schema", schema: OUTPUT_SCHEMA as any } },
   };
   if (FALLBACK_MODELS.has(s.model)) {

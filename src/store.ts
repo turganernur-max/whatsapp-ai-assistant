@@ -13,6 +13,7 @@ export interface Contact {
   last_inbound_at: Date | null;
   last_message_at: Date | null;
   unread: number;
+  followup_sent_at: Date | null;
   created_at: Date;
 }
 export interface Message {

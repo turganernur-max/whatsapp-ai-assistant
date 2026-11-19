@@ -11,6 +11,7 @@ import { getSettings, updateSettings, SettingsSchema, MODELS } from "./settings.
 import * as wa from "./whatsapp.js";
 import { handleEvents, ownerSend, ownerSendFile, schedule } from "./processor.js";
 import { addMedia, getMediaFile, listMedia, MediaError, MAX_RAW_UPLOAD } from "./media.js";
+import { audience, BroadcastError, cancelBroadcast, createBroadcast, runBroadcasts } from "./campaigns.js";
 import { generateReply, AiError } from "./ai.js";
 import { costUsd } from "./pricing.js";
 import { getContact, getKnowledge, monthSpendUsd, recordUsage, updateContact } from "./store.js";
@@ -421,6 +422,69 @@ export async function buildServer(): Promise<FastifyInstance> {
       } catch (e) {
         return reply.code(400).send({ error: (e as Error).message });
       }
+    });
+
+    // ----- Templates & broadcasts -----
+    api.get("/api/templates", async (_req, reply) => {
+      try {
+        return { items: await wa.listTemplates() };
+      } catch (e) {
+        return reply.code(400).send({ error: (e as Error).message });
+      }
+    });
+    api.post("/api/templates", async (req, reply) => {
+      const b = z
+        .object({
+          name: z.string().trim().toLowerCase().regex(/^[a-z0-9_]{1,512}$/, "Название: только латинские буквы, цифры и _"),
+          category: z.enum(["MARKETING", "UTILITY"]),
+          language: z.enum(["kk", "ru", "en"]),
+          body: z.string().trim().min(1).max(1024),
+        })
+        .parse(req.body);
+      try {
+        return { ok: true, result: await wa.createTemplate(b) };
+      } catch (e) {
+        return reply.code(400).send({ error: (e as Error).message });
+      }
+    });
+    api.post("/api/broadcasts/preview", async (req) => {
+      const b = z.object({ audience_days: z.number().int().min(0).max(3650) }).parse(req.body);
+      const people = await audience(b.audience_days);
+      const s = await getSettings();
+      return { count: people.length, est_cost_usd: people.length * s.template_price_usd, price_per_message: s.template_price_usd };
+    });
+    api.get("/api/broadcasts", async () => {
+      const items = await getDb().query(
+        `SELECT id, template_name, language, category, audience_days, scheduled_at, status, total, sent, failed, created_at, finished_at
+         FROM broadcasts ORDER BY id DESC LIMIT 50`,
+      );
+      return { items };
+    });
+    api.post("/api/broadcasts", async (req, reply) => {
+      const b = z
+        .object({
+          template_name: z.string().min(1),
+          language: z.string().min(2),
+          audience_days: z.number().int().min(0).max(3650),
+          scheduled_at: z.string().datetime({ offset: true }).optional().nullable(),
+          confirm: z.literal(true),
+        })
+        .parse(req.body);
+      try {
+        const t = (await wa.listTemplates()).find((x) => x.name === b.template_name && x.language === b.language);
+        if (!t) throw new BroadcastError("Шаблон не найден");
+        const when = b.scheduled_at ? new Date(b.scheduled_at) : null;
+        const id = await createBroadcast({ template: t, audienceDays: b.audience_days, scheduledAt: when });
+        if (!when || when.getTime() <= Date.now()) void runBroadcasts().catch(() => {});
+        return { ok: true, id };
+      } catch (e) {
+        return reply.code(400).send({ error: (e as Error).message });
+      }
+    });
+    api.post("/api/broadcasts/:id/cancel", async (req, reply) => {
+      const ok = await cancelBroadcast(Number((req.params as any).id));
+      if (!ok) return reply.code(400).send({ error: "Рассылку уже нельзя отменить" });
+      return { ok: true };
     });
 
     // ----- Test the AI without sending anything to WhatsApp -----

@@ -173,6 +173,7 @@
     "ai-settings": renderAiSettings,
     whatsapp: renderWhatsapp,
     privacy: renderPrivacy,
+    campaigns: renderCampaigns,
   };
   function stopPoll() {
     if (pollTimer) clearInterval(pollTimer);
@@ -189,7 +190,7 @@
     const [name, arg] = hash.split("/");
     currentRoute = hash;
     stopPoll();
-    const tabFor = { chat: "chats", costs: "stats", "ai-settings": "settings", whatsapp: "settings", privacy: "settings" };
+    const tabFor = { chat: "chats", costs: "stats", "ai-settings": "settings", whatsapp: "settings", privacy: "settings", campaigns: "settings" };
     const tab = tabFor[name] || name;
     document.querySelectorAll(".tabbar a").forEach((a) => a.classList.toggle("active", a.dataset.tab === tab));
     const fn = routes[name] || renderChats;
@@ -682,7 +683,7 @@
     title("Статистика");
     const st = await api("GET", "/api/stats");
     const t = st.totals;
-    const kinds = { handoff: "➡️ Передано владельцу", error: "❗ Ошибка", optout: "🚫 Отказ от автоответов", budget: "💸 Лимит расходов", loop_guard: "🔁 Защита от зацикливания" };
+    const kinds = { handoff: "➡️ Передано владельцу", error: "❗ Ошибка", optout: "🚫 Отказ от автоответов", budget: "💸 Лимит расходов", loop_guard: "🔁 Защита от зацикливания", followup: "🔔 Напоминание клиенту", broadcast: "📢 Рассылка" };
     view.innerHTML = `
       <div class="seg"><button class="on">Статистика</button><button id="to-costs">Расходы API</button></div>
       <div class="stats-grid">
@@ -749,6 +750,7 @@
     view.innerHTML = `
       <div class="list menu">
         <a href="#ai-settings"><span>🤖 Настройки AI</span><span>›</span></a>
+        <a href="#campaigns"><span>📢 Рассылки и напоминания</span><span>›</span></a>
         <a href="#whatsapp"><span>📱 Подключение WhatsApp</span><span>›</span></a>
         <a href="#costs"><span>💸 Расходы на API</span><span>›</span></a>
         <a href="#privacy"><span>🔒 Данные и безопасность</span><span>›</span></a>
@@ -917,6 +919,160 @@
       try {
         const r = await api("POST", "/api/whatsapp/test-message", { to, confirm: true });
         toast("Отправлено ✓ ID: " + (r.message_id || "").slice(0, 16) + "…");
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+  }
+
+  async function renderCampaigns() {
+    title("Рассылки и напоминания");
+    const [{ settings: s }, bc] = await Promise.all([api("GET", "/api/settings"), api("GET", "/api/broadcasts")]);
+    let templates = [];
+    let tplError = "";
+    try {
+      templates = (await api("GET", "/api/templates")).items;
+    } catch (err) {
+      tplError = err.message;
+    }
+    const approved = templates.filter((t) => t.status === "APPROVED");
+    const statusName = { APPROVED: "✅ одобрен", PENDING: "⏳ на проверке", REJECTED: "❌ отклонён", PAUSED: "⏸ приостановлен", DISABLED: "⛔ отключён" };
+    const catName = { MARKETING: "реклама", UTILITY: "сервисное", AUTHENTICATION: "код" };
+    const bStatus = { scheduled: "🕒 запланирована", running: "📤 отправляется", done: "✅ завершена", cancelled: "✖ отменена" };
+    view.innerHTML = `
+      <h2>🔔 Напоминание клиенту</h2>
+      <div class="card">
+        <label class="check"><span>Напоминать, если клиент замолчал<br><span class="muted small">AI один раз напишет короткое сообщение по теме разговора. Бесплатно: только в течение 24 часов после сообщения клиента.</span></span><input type="checkbox" id="fu-on" ${s.followup_enabled ? "checked" : ""}></label>
+        <label class="field">Через сколько часов после последнего ответа AI</label>
+        <input type="text" inputmode="decimal" id="fu-hours" value="${s.followup_hours}">
+        <button class="btn primary wide" id="fu-save">Сохранить</button>
+        <p class="muted small">Не отправляется, если разговор передан вам, вы ведёте переписку сами, клиент отписался или AI выключен.</p>
+      </div>
+
+      <h2>📢 Рассылка</h2>
+      <div class="banner warn small">Рассылка — это <b>платные</b> сообщения по шаблонам, одобренным Meta (≈ $${s.template_price_usd} за сообщение — оценка, точная цена в Meta). Отправляйте только клиентам, которые согласны получать от вас сообщения, иначе Meta может ограничить номер. Получатели — только те, кто уже писал вам; отписавшиеся пропускаются.</div>
+      <div class="card">
+        <h3>Новая рассылка</h3>
+        ${tplError ? `<div class="banner danger small">${esc(tplError)}</div>` : ""}
+        <label class="field">Шаблон (только одобренные Meta)</label>
+        <select id="bc-tpl">${approved.length ? approved.map((t, i) => `<option value="${i}">${esc(t.name)} · ${esc(t.language)} · ${esc(catName[t.category] || t.category)}</option>`).join("") : '<option value="">Нет одобренных шаблонов — создайте ниже</option>'}</select>
+        <p class="muted small" id="bc-body"></p>
+        <label class="field">Кому</label>
+        <select id="bc-days">
+          <option value="7">Писали за последние 7 дней</option>
+          <option value="30" selected>Писали за последние 30 дней</option>
+          <option value="90">Писали за последние 90 дней</option>
+          <option value="0">Все, кто когда-либо писал</option>
+        </select>
+        <label class="field">Когда отправить (пусто — сразу)</label>
+        <input type="datetime-local" id="bc-when">
+        <p id="bc-preview" class="small"></p>
+        <div class="row"><button class="btn grow" id="bc-calc">Посчитать</button><button class="btn primary grow" id="bc-send" ${approved.length ? "" : "disabled"}>Отправить</button></div>
+      </div>
+      <div class="card">
+        <h3>История рассылок</h3>
+        ${
+          bc.items.length
+            ? bc.items
+                .map(
+                  (b) => `<div class="status-row small"><span><b>${esc(b.template_name)}</b> · ${esc(bStatus[b.status] || b.status)}<br><span class="muted">${fmtTime(b.scheduled_at)} · отправлено ${b.sent} из ${b.total}${b.failed ? ` · ошибок ${b.failed}` : ""}</span></span>${["scheduled", "running"].includes(b.status) ? `<button class="btn danger" data-bc-cancel="${b.id}">Отменить</button>` : ""}</div>`,
+                )
+                .join("")
+            : '<p class="muted small">Рассылок пока не было.</p>'
+        }
+      </div>
+
+      <h2>📝 Шаблоны сообщений</h2>
+      <div class="card">
+        <h3>Создать шаблон</h3>
+        <p class="muted small">Meta проверяет шаблон от нескольких минут до 24 часов. Вместо имени клиента напишите <b>{{1}}</b>. Не используйте ссылки-сокращатели и агрессивную рекламу — такие шаблоны отклоняют.</p>
+        <label class="field">Системное имя (латиница, цифры, _)</label>
+        <input type="text" id="tp-name" placeholder="aksiya_noyabr" autocapitalize="off" autocorrect="off">
+        <label class="field">Тип</label>
+        <select id="tp-cat"><option value="MARKETING">Реклама / акция</option><option value="UTILITY">Сервисное (напоминание о записи, заказе)</option></select>
+        <label class="field">Язык</label>
+        <select id="tp-lang"><option value="kk">Қазақша</option><option value="ru">Русский</option></select>
+        <label class="field">Текст</label>
+        <textarea id="tp-body" placeholder="Сәлеметсіз бе, {{1}}! Бұл аптада барлық қызметтерге 20% жеңілдік бар. Жазылғыңыз келсе, осы чатқа жазыңыз."></textarea>
+        <button class="btn primary wide" id="tp-save">Отправить на проверку в Meta</button>
+      </div>
+      <div class="list">${
+        templates.length
+          ? templates
+              .map(
+                (t) => `<div class="item"><div class="body"><div class="top"><span class="name">${esc(t.name)} · ${esc(t.language)}</span><span class="time">${esc(statusName[t.status] || t.status)}</span></div><div class="preview">${esc(t.body)}</div>${t.rejected_reason ? `<div class="small error">Причина: ${esc(t.rejected_reason)}</div>` : ""}</div></div>`,
+              )
+              .join("")
+          : '<div class="item"><div class="body muted">Шаблонов пока нет.</div></div>'
+      }</div>`;
+
+    const showBody = () => {
+      const t = approved[Number($("#bc-tpl").value)];
+      $("#bc-body").textContent = t ? "Текст: " + t.body : "";
+    };
+    showBody();
+    $("#bc-tpl").addEventListener("change", showBody);
+
+    $("#fu-save").addEventListener("click", async () => {
+      const h = Number(String($("#fu-hours").value).replace(",", "."));
+      if (!(h >= 0.5 && h <= 20)) return toast("Часы: от 0.5 до 20", true);
+      try {
+        await api("PUT", "/api/settings", { followup_enabled: $("#fu-on").checked, followup_hours: h });
+        toast("Сохранено ✓");
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+
+    const preview = async () => {
+      const r = await api("POST", "/api/broadcasts/preview", { audience_days: Number($("#bc-days").value) });
+      $("#bc-preview").textContent = `Получателей: ${r.count}. Примерная стоимость: ${money(r.est_cost_usd)}.`;
+      return r;
+    };
+    $("#bc-calc").addEventListener("click", () => preview().catch((err) => toast(err.message, true)));
+    $("#bc-send").addEventListener("click", async () => {
+      const t = approved[Number($("#bc-tpl").value)];
+      if (!t) return toast("Выберите шаблон", true);
+      try {
+        const r = await preview();
+        if (!r.count) return toast("Нет получателей", true);
+        const whenVal = $("#bc-when").value;
+        const when = whenVal ? new Date(whenVal) : null;
+        if (when && isNaN(when.getTime())) return toast("Неверная дата", true);
+        const whenText = when ? "в " + when.toLocaleString("ru-RU") : "сейчас";
+        if (!confirm(`Отправить рассылку «${t.name}» ${r.count} клиентам ${whenText}?\nПримерная стоимость: ${money(r.est_cost_usd)}.\nЭто реальные платные сообщения.`)) return;
+        await api("POST", "/api/broadcasts", {
+          template_name: t.name,
+          language: t.language,
+          audience_days: Number($("#bc-days").value),
+          scheduled_at: when ? when.toISOString() : null,
+          confirm: true,
+        });
+        toast(when ? "Рассылка запланирована ✓" : "Рассылка запущена ✓");
+        renderCampaigns();
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+    view.querySelectorAll("[data-bc-cancel]").forEach((btn) =>
+      btn.addEventListener("click", async () => {
+        if (!confirm("Отменить рассылку? Уже отправленные сообщения не отзываются.")) return;
+        try {
+          await api("POST", `/api/broadcasts/${btn.dataset.bcCancel}/cancel`);
+          renderCampaigns();
+        } catch (err) {
+          toast(err.message, true);
+        }
+      }),
+    );
+    $("#tp-save").addEventListener("click", async () => {
+      const body = $("#tp-body").value.trim();
+      const name = $("#tp-name").value.trim().toLowerCase();
+      if (!name || !body) return toast("Заполните имя и текст", true);
+      try {
+        await api("POST", "/api/templates", { name, category: $("#tp-cat").value, language: $("#tp-lang").value, body });
+        toast("Шаблон отправлен на проверку ✓");
+        renderCampaigns();
       } catch (err) {
         toast(err.message, true);
       }

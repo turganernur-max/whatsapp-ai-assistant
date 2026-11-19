@@ -2,6 +2,7 @@ import { config, missingRequired, integrationStatus } from "./config.js";
 import { initDb, getDb } from "./db.js";
 import { buildServer } from "./server.js";
 import { cleanupOldData, recover, startProcessor, stopProcessor } from "./processor.js";
+import { startCampaigns, stopCampaigns } from "./campaigns.js";
 
 async function main() {
   const missing = missingRequired();
@@ -14,6 +15,7 @@ async function main() {
   const app = await buildServer();
   await app.listen({ port: config.port, host: "0.0.0.0" });
   console.log("Integrations:", JSON.stringify(integrationStatus()));
+  startCampaigns();
   const n = await recover();
   if (n) console.log(`Recovered pending work for ${n} contact(s)`);
 
@@ -26,6 +28,7 @@ async function main() {
   const shutdown = async (sig: string) => {
     console.log(`${sig} received, shutting down…`);
     stopProcessor();
+    stopCampaigns();
     clearInterval(housekeeping);
     await app.close().catch(() => {});
     await getDb().close().catch(() => {});

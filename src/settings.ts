@@ -34,6 +34,9 @@ export const SettingsSchema = z.object({
   send_read_receipts: z.boolean(),
   timezone: z.string().max(64),
   handoff_mode: z.enum(["rare", "balanced", "strict"]),
+  followup_enabled: z.boolean(),
+  followup_hours: z.number().min(0.5).max(20),
+  template_price_usd: z.number().min(0).max(5),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
@@ -69,6 +72,9 @@ export const DEFAULT_SETTINGS: Settings = {
   send_read_receipts: true,
   timezone: "Asia/Almaty",
   handoff_mode: "balanced",
+  followup_enabled: false,
+  followup_hours: 3,
+  template_price_usd: 0.05,
 };
 
 let cache: Settings | null = null;

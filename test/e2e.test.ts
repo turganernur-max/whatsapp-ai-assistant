@@ -15,6 +15,13 @@ const { updateSettings, clearSettingsCache } = await import("../src/settings.js"
 // ---------- Fake WhatsApp Graph API ----------
 const sent: any[] = [];
 const uploads: string[] = [];
+let outCounter = 0;
+const createdTemplates: any[] = [];
+const TEMPLATES = [
+  { name: "aksiya", language: "kk", status: "APPROVED", category: "MARKETING", components: [{ type: "BODY", text: "Сәлем, {{1}}! Жеңілдік бар." }] },
+  { name: "news_plain", language: "ru", status: "APPROVED", category: "MARKETING", components: [{ type: "BODY", text: "Новинки уже в продаже" }] },
+  { name: "draft", language: "ru", status: "PENDING", category: "UTILITY", components: [{ type: "BODY", text: "x" }] },
+];
 let failSends = false;
 const graph = http.createServer((req, res) => {
   let body = "";
@@ -39,10 +46,15 @@ const graph = http.createServer((req, res) => {
         return res.end(JSON.stringify({ error: { message: "Recipient not allowed", code: 131030 } }));
       }
       sent.push(b);
-      return res.end(JSON.stringify({ messages: [{ id: "wamid.OUT" + sent.length }] }));
+      return res.end(JSON.stringify({ messages: [{ id: "wamid.OUT" + (++outCounter) }] }));
     }
     if (req.method === "GET" && req.url?.includes("/PN1?")) {
       return res.end(JSON.stringify({ display_phone_number: "+1 555 0100", verified_name: "Test", quality_rating: "GREEN" }));
+    }
+    if (req.method === "GET" && req.url?.includes("/WABA1/message_templates")) return res.end(JSON.stringify({ data: TEMPLATES }));
+    if (req.method === "POST" && req.url?.includes("/WABA1/message_templates")) {
+      createdTemplates.push(JSON.parse(body));
+      return res.end(JSON.stringify({ id: "TPL1", status: "PENDING" }));
     }
     if (req.url?.includes("/WABA1/subscribed_apps")) return res.end(JSON.stringify({ data: [{ id: 1 }], success: true }));
     res.statusCode = 404;
@@ -139,7 +151,7 @@ beforeEach(async () => {
   failSends = false;
   nextReply = { reply: "Здравствуйте! Стрижка стоит 5000 ₸.", handoff: false, handoff_reason: "" };
   const d = getDb();
-  await d.exec(`DELETE FROM messages; DELETE FROM contacts; DELETE FROM usage; DELETE FROM events; DELETE FROM settings; DELETE FROM knowledge; DELETE FROM media;`);
+  await d.exec(`DELETE FROM messages; DELETE FROM contacts; DELETE FROM usage; DELETE FROM events; DELETE FROM settings; DELETE FROM knowledge; DELETE FROM media; DELETE FROM broadcasts;`);
   clearSettingsCache();
   await updateSettings({ ai_enabled: true });
 });
@@ -496,4 +508,104 @@ test("panel files are served with no-cache so phones pick up new versions", asyn
     assert.equal(r.statusCode, 200, url);
     assert.equal(r.headers["cache-control"], "no-cache", url);
   }
+});
+
+
+test("follow-up: one reminder when the client goes quiet, reset by a new message", async () => {
+  const { runFollowups } = await import("../src/campaigns.js");
+  await updateSettings({ followup_enabled: true, followup_hours: 0.5 });
+  await postWebhook(inbound("77010000030", "Ойланайын"));
+  await drain();
+  assert.equal(sent.length, 1);
+  assert.equal(await runFollowups(), 0, "too early");
+  await getDb().query(`UPDATE messages SET created_at = now() - interval '1 hour' WHERE wa_id = '77010000030' AND sender = 'ai'`);
+  nextReply = { reply: "Сұрақтарыңыз қалды ма? Көмектесейін бе?", handoff: false, handoff_reason: "", send_media: [] };
+  assert.equal(await runFollowups(), 1);
+  assert.equal(sent.at(-1).text.body, "Сұрақтарыңыз қалды ма? Көмектесейін бе?");
+  const lastCall = claudeCalls.at(-1);
+  const lastBlocks = lastCall.messages.at(-1).content.map((b: any) => b.text).join(" ");
+  assert.match(lastBlocks, /не отвечает/);
+  await getDb().query(`UPDATE messages SET created_at = now() - interval '2 hour' WHERE wa_id = '77010000030' AND sender = 'ai'`);
+  assert.equal(await runFollowups(), 0, "only once per client message");
+
+  // paused contacts never get reminders
+  await getDb().query(`UPDATE contacts SET followup_sent_at = NULL, paused_until = now() + interval '1 hour' WHERE wa_id = '77010000030'`);
+  assert.equal(await runFollowups(), 0);
+  await updateSettings({ followup_enabled: false });
+});
+
+test("follow-up is skipped when the AI decides it is not appropriate", async () => {
+  const { runFollowups } = await import("../src/campaigns.js");
+  await updateSettings({ followup_enabled: true, followup_hours: 0.5 });
+  await postWebhook(inbound("77010000031", "Рахмет, сау болыңыз"));
+  await drain();
+  await getDb().query(`UPDATE messages SET created_at = now() - interval '1 hour' WHERE wa_id = '77010000031' AND sender = 'ai'`);
+  const before = sent.length;
+  nextReply = { reply: "", handoff: false, handoff_reason: "", send_media: [] };
+  assert.equal(await runFollowups(), 0);
+  assert.equal(sent.length, before);
+  await updateSettings({ followup_enabled: false });
+});
+
+test("broadcast: approved template with the client's name, opted-out skipped, schedule and cancel", async () => {
+  const { runBroadcasts } = await import("../src/campaigns.js");
+  await updateSettings({ ai_enabled: false });
+  await postWebhook(inbound("77010000040", "Сәлем"));
+  await postWebhook(inbound("77010000041", "Привет"));
+  await postWebhook(inbound("77010000042", "стоп"));
+  await drain();
+  const h = await login();
+  const tpl = await app.inject({ url: "/api/templates", headers: h });
+  assert.equal(tpl.json().items.find((t: any) => t.name === "aksiya").params, 1);
+
+  const pv = await app.inject({ method: "POST", url: "/api/broadcasts/preview", headers: h, payload: { audience_days: 30 } });
+  assert.equal(pv.json().count, 2, "opted-out client excluded");
+
+  const noConfirm = await app.inject({ method: "POST", url: "/api/broadcasts", headers: h, payload: { template_name: "aksiya", language: "kk", audience_days: 30 } });
+  assert.equal(noConfirm.statusCode, 400);
+  const pending = await app.inject({ method: "POST", url: "/api/broadcasts", headers: h, payload: { template_name: "draft", language: "ru", audience_days: 30, confirm: true } });
+  assert.equal(pending.statusCode, 400, "not approved");
+
+  sent.length = 0;
+  const go = await app.inject({ method: "POST", url: "/api/broadcasts", headers: h, payload: { template_name: "aksiya", language: "kk", audience_days: 30, confirm: true } });
+  assert.equal(go.statusCode, 200, go.body);
+  for (let i = 0; i < 100; i++) {
+    await runBroadcasts();
+    const [b] = await getDb().query(`SELECT status FROM broadcasts WHERE id = $1`, [go.json().id]);
+    if (b.status === "done") break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  const tplSends = sent.filter((m) => m.type === "template");
+  assert.equal(tplSends.length, 2);
+  assert.equal(tplSends[0].template.name, "aksiya");
+  assert.match(tplSends[0].template.components[0].parameters[0].text, /Клиент 7701000004[01]/);
+  const list = (await app.inject({ url: "/api/broadcasts", headers: h })).json().items;
+  assert.equal(list[0].status, "done");
+  assert.equal(list[0].sent, 2);
+  const hist = await getDb().query(`SELECT text FROM messages WHERE wa_id = '77010000040' AND type = 'template'`);
+  assert.match(hist[0].text, /^📢 Сәлем, Клиент 77010000040! Жеңілдік бар\.$/);
+
+  // scheduled in the future: nothing sent until due; can be cancelled
+  sent.length = 0;
+  const later = new Date(Date.now() + 3600_000).toISOString();
+  const sch = await app.inject({ method: "POST", url: "/api/broadcasts", headers: h, payload: { template_name: "news_plain", language: "ru", audience_days: 0, scheduled_at: later, confirm: true } });
+  assert.equal(sch.statusCode, 200, sch.body);
+  await runBroadcasts();
+  assert.equal(sent.length, 0);
+  const cancel = await app.inject({ method: "POST", url: `/api/broadcasts/${sch.json().id}/cancel`, headers: h });
+  assert.equal(cancel.statusCode, 200);
+  await getDb().query(`UPDATE broadcasts SET scheduled_at = now() - interval '1 minute' WHERE id = $1`, [sch.json().id]);
+  await runBroadcasts();
+  assert.equal(sent.length, 0, "cancelled broadcast never sends");
+});
+
+test("templates can be created from the panel; invalid names rejected", async () => {
+  const h = await login();
+  const bad = await app.inject({ method: "POST", url: "/api/templates", headers: h, payload: { name: "Акция!", category: "MARKETING", language: "kk", body: "x" } });
+  assert.equal(bad.statusCode, 400);
+  const ok = await app.inject({ method: "POST", url: "/api/templates", headers: h, payload: { name: "aksiya_dec", category: "MARKETING", language: "kk", body: "Сәлем, {{1}}! Желтоқсан жеңілдігі." } });
+  assert.equal(ok.statusCode, 200, ok.body);
+  const created = createdTemplates.at(-1);
+  assert.equal(created.name, "aksiya_dec");
+  assert.deepEqual(created.components[0].example.body_text, [["Айгерим"]]);
 });

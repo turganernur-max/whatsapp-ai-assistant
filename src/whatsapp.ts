@@ -179,15 +179,65 @@ export async function sendMediaMessage(
   return sendMessage(to, { type: kind, [kind]: body });
 }
 
-export async function sendTemplate(to: string, name: string, languageCode: string): Promise<string> {
-  await pace();
-  const res = await graph("POST", `${config.waPhoneNumberId}/messages`, {
-    messaging_product: "whatsapp",
-    to,
-    type: "template",
-    template: { name, language: { code: languageCode } },
+/** Sends an approved template (the only way to write first / after the 24h window). */
+export async function sendTemplate(to: string, name: string, languageCode: string, bodyParams: string[] = []): Promise<string> {
+  const template: Record<string, unknown> = { name, language: { code: languageCode } };
+  if (bodyParams.length) {
+    template.components = [{ type: "body", parameters: bodyParams.map((text) => ({ type: "text", text })) }];
+  }
+  return sendMessage(to, { type: "template", template });
+}
+
+export interface TemplateInfo {
+  name: string;
+  language: string;
+  status: string;
+  category: string;
+  body: string;
+  params: number;
+  rejected_reason?: string;
+}
+
+/** Number of {{n}} variables in a template body. */
+export function countParams(body: string): number {
+  const nums = [...body.matchAll(/\{\{\s*(\d+)\s*\}\}/g)].map((m) => Number(m[1]));
+  return nums.length ? Math.max(...nums) : 0;
+}
+
+export async function listTemplates(): Promise<TemplateInfo[]> {
+  if (!config.waBusinessAccountId) throw new WhatsAppError("WHATSAPP_BUSINESS_ACCOUNT_ID не настроен", 0);
+  const res = await graph(
+    "GET",
+    `${config.waBusinessAccountId}/message_templates?fields=name,language,status,category,components,rejected_reason&limit=200`,
+    undefined,
+    2,
+  );
+  return (res?.data ?? []).map((t: any) => {
+    const body = String((t.components ?? []).find((c: any) => c.type === "BODY")?.text ?? "");
+    return {
+      name: t.name,
+      language: t.language,
+      status: t.status,
+      category: t.category,
+      body,
+      params: countParams(body),
+      rejected_reason: t.rejected_reason && t.rejected_reason !== "NONE" ? t.rejected_reason : undefined,
+    };
   });
-  return res?.messages?.[0]?.id ?? "";
+}
+
+/** Creates a simple text template; {{1}} (optional) is the client's name. Meta reviews it before use. */
+export async function createTemplate(input: { name: string; category: "MARKETING" | "UTILITY"; language: string; body: string }) {
+  if (!config.waBusinessAccountId) throw new WhatsAppError("WHATSAPP_BUSINESS_ACCOUNT_ID не настроен", 0);
+  const params = countParams(input.body);
+  const component: Record<string, unknown> = { type: "BODY", text: input.body };
+  if (params) component.example = { body_text: [Array.from({ length: params }, (_, i) => (i === 0 ? "Айгерим" : `пример ${i + 1}`))] };
+  return graph("POST", `${config.waBusinessAccountId}/message_templates`, {
+    name: input.name,
+    category: input.category,
+    language: input.language,
+    components: [component],
+  }, 1);
 }
 
 /** Marks a message as read and shows "typing…" to the customer (best effort). */

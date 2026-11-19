@@ -62,7 +62,7 @@ main { padding: 12px 16px calc(env(safe-area-inset-bottom) + 84px); max-width: 7
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .row > .grow { flex: 1; min-width: 0; }
 
-input[type=text], input[type=password], input[type=number], input[type=tel], input[type=search], select, textarea {
+input[type=text], input[type=password], input[type=number], input[type=tel], input[type=search], input[type=datetime-local], select, textarea {
   width: 100%; font: inherit; font-size: 16px; color: var(--text); background: var(--bg); border: 1px solid var(--line);
   border-radius: 10px; padding: 10px 12px; margin: 4px 0 10px; }
 textarea { min-height: 120px; resize: vertical; }
