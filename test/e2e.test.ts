@@ -356,3 +356,16 @@ test("privacy page is always served whole (Meta crawler sends Range requests)", 
   const js = await app.inject({ url: "/app.js", headers: { range: "bytes=0-10" } });
   assert.equal(js.statusCode, 200);
 });
+
+test("webhook stats count accepted and rejected deliveries", async () => {
+  const { webhookStats } = await import("../src/server.js");
+  const before = { ok: webhookStats.okCount, bad: webhookStats.badSignatureCount };
+  await postWebhook(inbound("77010000014", "hi"));
+  await app.inject({ method: "POST", url: "/webhook", payload: JSON.stringify(inbound("77010000014", "x")), headers: { "content-type": "application/json", "x-hub-signature-256": "sha256=" + "1".repeat(64) } });
+  await drain();
+  assert.equal(webhookStats.okCount, before.ok + 1);
+  assert.equal(webhookStats.badSignatureCount, before.bad + 1);
+  const h = await login();
+  const st = (await app.inject({ url: "/api/whatsapp/status", headers: h })).json();
+  assert.equal(st.webhook.badSignatureCount, webhookStats.badSignatureCount);
+});

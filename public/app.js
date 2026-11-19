@@ -656,6 +656,14 @@
         <button class="btn wide" id="subscribe">Подписать приложение на сообщения</button>
       </div>
       <div class="card">
+        <h3>Входящие от Meta (с момента запуска сервера ${fmtTime(st.webhook.since)})</h3>
+        <div class="status-row"><span>Принято запросов</span><span>${st.webhook.okCount}${st.webhook.lastOkAt ? " · последний " + fmtTime(st.webhook.lastOkAt) : ""}</span></div>
+        <div class="status-row"><span>Отклонено: неверная подпись</span><span>${st.webhook.badSignatureCount}${st.webhook.lastBadSignatureAt ? " · " + fmtTime(st.webhook.lastBadSignatureAt) : ""}</span></div>
+        ${st.webhook.badSignatureCount ? '<div class="banner danger small">Meta присылает сообщения, но подпись не совпадает: значение META_APP_SECRET в Render неверное. Скопируйте «Секрет приложения» из Meta (Настройки приложения → Основное) заново и замените его в Render.</div>' : ""}
+        ${st.webhook.notConfiguredCount ? '<div class="banner danger small">Сообщения приходят, но META_APP_SECRET не задан в Render.</div>' : ""}
+        ${!st.webhook.okCount && !st.webhook.badSignatureCount && !st.webhook.notConfiguredCount ? '<p class="muted small">Пока ничего не приходило. Напишите на номер WhatsApp и обновите страницу через минуту.</p>' : ""}
+      </div>
+      <div class="card">
         <h3>Webhook для Meta</h3>
         <p class="small">Callback URL:<br><span class="code">${esc(st.webhook_url)}</span></p>
         <p class="small muted">Verify token — значение переменной WEBHOOK_VERIFY_TOKEN на сервере. Поля подписки: <span class="code">messages</span> (и <span class="code">smb_message_echoes</span>, если номер работает и в приложении WhatsApp Business).</p>

@@ -20,6 +20,17 @@ declare module "fastify" {
   }
 }
 
+/** What happened to the most recent webhook calls — shown in the panel for troubleshooting. */
+const startedAt = new Date().toISOString();
+export const webhookStats = {
+  okCount: 0,
+  lastOkAt: null as string | null,
+  badSignatureCount: 0,
+  lastBadSignatureAt: null as string | null,
+  notConfiguredCount: 0,
+  lastEvents: 0,
+};
+
 export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({
     logger: { level: config.nodeEnv === "test" ? "silent" : "info", redact: ["req.headers.cookie", "req.headers.authorization"] },
@@ -76,14 +87,21 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.post("/webhook", async (req, reply) => {
     if (!config.waAppSecret) {
       req.log.error("META_APP_SECRET is not set — refusing unsigned webhook");
+      webhookStats.notConfiguredCount++;
       return reply.code(503).send({ error: "not configured" });
     }
     const sig = req.headers["x-hub-signature-256"] as string | undefined;
     if (!req.rawBody || !wa.verifySignature(req.rawBody, sig, config.waAppSecret)) {
-      req.log.warn("Webhook signature mismatch");
+      req.log.warn("Webhook signature mismatch — check META_APP_SECRET");
+      webhookStats.badSignatureCount++;
+      webhookStats.lastBadSignatureAt = new Date().toISOString();
       return reply.code(401).send({ error: "bad signature" });
     }
     const events = wa.parseWebhook(req.body, config.waPhoneNumberId);
+    webhookStats.okCount++;
+    webhookStats.lastOkAt = new Date().toISOString();
+    webhookStats.lastEvents = events.length;
+    req.log.info({ events: events.length }, "webhook accepted");
     await handleEvents(events); // fast DB inserts only; AI work runs in the background
     return reply.code(200).send({ ok: true });
   });
@@ -388,6 +406,7 @@ export async function buildServer(): Promise<FastifyInstance> {
         phone_number_id: config.waPhoneNumberId ? config.waPhoneNumberId : null,
         waba_id: config.waBusinessAccountId || null,
         graph_version: config.graphVersion,
+        webhook: { ...webhookStats, since: startedAt },
       };
       if (config.waToken && config.waPhoneNumberId) {
         try {
