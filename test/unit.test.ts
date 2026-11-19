@@ -89,3 +89,17 @@ test("buildMessages alternates roles, starts and ends with user", () => {
   const last = msgs[2].content as any[];
   assert.equal(last[0].text, "Ок");
 });
+
+test("token pasted together with Meta's curl example is cleaned; secrets are redacted", async () => {
+  const { cleanToken, tokenProblem } = await import("../src/config.js");
+  const { redact } = await import("../src/whatsapp.js");
+  const tok = "EAAFAKEtokenFORtests0000000000000000000000";
+  const curl = `curl -i -X POST \`https://graph.facebook.com/v25.0/123/messages\` -H 'Authorization: Bearer ${tok}' -H 'Content-Type: application/json' -d '{}'`;
+  assert.equal(cleanToken(curl), tok);
+  assert.equal(cleanToken(`  Bearer ${tok}\n`), tok);
+  assert.equal(cleanToken(tok), tok);
+  assert.equal(tokenProblem(tok), null);
+  assert.ok(tokenProblem("EAA abc def ghi jkl mno pqr"));
+  assert.ok(!redact(`Headers.append: "Bearer ${tok}" is invalid`).includes(tok));
+  assert.ok(!redact(`token ${tok} here`).includes(tok));
+});

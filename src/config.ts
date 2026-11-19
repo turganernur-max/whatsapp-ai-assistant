@@ -1,4 +1,23 @@
 // All secrets come from environment variables only. Nothing secret is stored in git.
+/**
+ * People often paste more than the token (e.g. the whole curl example from Meta, or "Bearer ...").
+ * Extract the bare token when possible; otherwise keep it and let tokenProblem() report it.
+ */
+export function cleanToken(raw: string): string {
+  const v = raw.trim().replace(/^['"]|['"]$/g, "");
+  const m = /Bearer\s+([A-Za-z0-9_\-.]+)/.exec(v);
+  if (m) return m[1];
+  return v;
+}
+
+export function tokenProblem(token: string): string | null {
+  if (!token) return null;
+  if (/\s/.test(token) || token.length < 20) {
+    return "WHATSAPP_TOKEN содержит лишний текст или неполный. Вставьте только сам токен (начинается с EAA…), без curl и пробелов.";
+  }
+  return null;
+}
+
 function env(name: string, fallback = ""): string {
   const v = process.env[name];
   return v === undefined || v === "" ? fallback : v;
@@ -19,12 +38,12 @@ export const config = {
   sessionSecret: env("SESSION_SECRET"),
 
   // WhatsApp Cloud API (Meta)
-  waToken: env("WHATSAPP_TOKEN"),
-  waPhoneNumberId: env("WHATSAPP_PHONE_NUMBER_ID"),
-  waBusinessAccountId: env("WHATSAPP_BUSINESS_ACCOUNT_ID"),
-  waAppSecret: env("META_APP_SECRET"),
+  waToken: cleanToken(env("WHATSAPP_TOKEN")),
+  waPhoneNumberId: env("WHATSAPP_PHONE_NUMBER_ID").trim(),
+  waBusinessAccountId: env("WHATSAPP_BUSINESS_ACCOUNT_ID").trim(),
+  waAppSecret: env("META_APP_SECRET").trim(),
   waVerifyToken: env("WEBHOOK_VERIFY_TOKEN"),
-  graphVersion: env("GRAPH_API_VERSION", "v23.0"),
+  graphVersion: env("GRAPH_API_VERSION", "v25.0"),
   graphBase: env("GRAPH_API_BASE", "https://graph.facebook.com"),
 
   // Claude
@@ -56,7 +75,8 @@ export function missingRequired(): string[] {
 
 export function integrationStatus() {
   return {
-    whatsapp: Boolean(config.waToken && config.waPhoneNumberId),
+    whatsapp: Boolean(config.waToken && config.waPhoneNumberId && !tokenProblem(config.waToken)),
+    whatsappProblem: tokenProblem(config.waToken),
     webhookSignature: Boolean(config.waAppSecret),
     webhookVerifyToken: Boolean(config.waVerifyToken),
     claude: Boolean(config.anthropicApiKey),

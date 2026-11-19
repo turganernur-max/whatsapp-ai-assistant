@@ -148,7 +148,7 @@
     const o = await refreshOverview();
     const warn = [];
     if (!o.ai_enabled) warn.push(`<div class="banner warn">AI выключен — клиенты не получают автоответы. Включите переключатель вверху.</div>`);
-    if (!o.integrations.whatsapp) warn.push(`<div class="banner danger">WhatsApp не подключён. Откройте Настройки → Подключение WhatsApp.</div>`);
+    if (!o.integrations.whatsapp) warn.push(`<div class="banner danger">${esc(o.integrations.whatsappProblem || "WhatsApp не подключён. Откройте Настройки → Подключение WhatsApp.")}</div>`);
     if (!o.integrations.claude) warn.push(`<div class="banner danger">Ключ Claude API не задан.</div>`);
     if (o.monthly_budget > 0 && o.month_spend >= o.monthly_budget)
       warn.push(`<div class="banner danger">Месячный лимит расходов исчерпан (${money(o.month_spend)} из ${money(o.monthly_budget)}). AI не отвечает.</div>`);
@@ -632,6 +632,7 @@
       <div class="card">
         <h3>Состояние</h3>
         <div class="status-row"><span>Токен WhatsApp и ID номера</span><span>${ok(i.whatsapp)}</span></div>
+        ${i.whatsappProblem ? `<div class="banner danger small">${esc(i.whatsappProblem)}</div>` : ""}
         <div class="status-row"><span>Секрет приложения (проверка подписи webhook)</span><span>${ok(i.webhookSignature)}</span></div>
         <div class="status-row"><span>Verify token для webhook</span><span>${ok(i.webhookVerifyToken)}</span></div>
         <div class="status-row"><span>Ключ Claude API</span><span>${ok(i.claude)}</span></div>

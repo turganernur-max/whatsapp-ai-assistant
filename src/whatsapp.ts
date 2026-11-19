@@ -1,5 +1,12 @@
 import crypto from "node:crypto";
-import { config } from "./config.js";
+import { config, tokenProblem } from "./config.js";
+
+/** Removes access tokens from any text before it is logged or shown in the panel. */
+export function redact(text: string): string {
+  let out = String(text ?? "");
+  if (config.waToken && config.waToken.length >= 8) out = out.split(config.waToken).join("EAA…(скрыто)");
+  return out.replace(/EAA[A-Za-z0-9_\-]{10,}/g, "EAA…(скрыто)").replace(/Bearer\s+\S+/g, "Bearer …(скрыто)");
+}
 
 export class WhatsAppError extends Error {
   constructor(
@@ -8,7 +15,7 @@ export class WhatsAppError extends Error {
     public code?: number,
     public retryable = false,
   ) {
-    super(message);
+    super(redact(message));
   }
 }
 
@@ -29,6 +36,8 @@ async function pace() {
 
 async function graph(method: "GET" | "POST", p: string, body?: unknown, attempts = 3): Promise<any> {
   if (!config.waToken) throw new WhatsAppError("WHATSAPP_TOKEN не настроен", 0);
+  const problem = tokenProblem(config.waToken);
+  if (problem) throw new WhatsAppError(problem, 0);
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {

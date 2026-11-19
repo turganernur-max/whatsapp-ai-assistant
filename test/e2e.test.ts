@@ -19,7 +19,7 @@ const graph = http.createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
   req.on("end", () => {
-    assert.equal(req.headers.authorization, "Bearer TEST_TOKEN");
+    assert.equal(req.headers.authorization, "Bearer EAATESTFAKE00000000000000000");
     res.setHeader("Content-Type", "application/json");
     if (req.method === "POST" && req.url?.endsWith("/PN1/messages")) {
       const b = JSON.parse(body);
@@ -100,7 +100,7 @@ before(async () => {
   const port = (graph.address() as AddressInfo).port;
   Object.assign(config, {
     graphBase: `http://127.0.0.1:${port}`,
-    waToken: "TEST_TOKEN",
+    waToken: "EAATESTFAKE00000000000000000",
     waPhoneNumberId: "PN1",
     waBusinessAccountId: "WABA1",
     waAppSecret: "APPSECRET",
