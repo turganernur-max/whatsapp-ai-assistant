@@ -139,3 +139,6 @@ textarea.short { min-height: 60px; }
 .lib-select { margin: 0; padding: 7px 10px; font-size: 14px; }
 .vh { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
 .small-btn { position: relative; }
+
+.fu-row { display: flex; align-items: center; gap: 8px; width: 100%; font-size: 14px; }
+.fu-row select { flex: 1; }

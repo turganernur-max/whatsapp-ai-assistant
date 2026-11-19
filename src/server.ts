@@ -222,6 +222,7 @@ export async function buildServer(): Promise<FastifyInstance> {
           needs_attention: z.boolean().optional(),
           note: z.string().max(2000).optional(),
           name: z.string().max(200).optional(),
+          followup_mode: z.enum(["default", "off", "once", "persistent"]).optional(),
         })
         .strict()
         .parse(req.body);
@@ -238,6 +239,10 @@ export async function buildServer(): Promise<FastifyInstance> {
       }
       if (body.note !== undefined) patch.note = body.note;
       if (body.name !== undefined) patch.name = body.name;
+      if (body.followup_mode !== undefined) {
+        patch.followup_mode = body.followup_mode;
+        patch.followup_count = 0;
+      }
       await updateContact(waId, patch as any);
       return { contact: await getContact(waId) };
     });

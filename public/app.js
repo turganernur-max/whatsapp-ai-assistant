@@ -256,7 +256,7 @@
             <div class="body">
               <div class="top"><span class="name">${esc(contactTitle(c))}</span><span class="time">${fmtTime(c.last_message_at)}</span></div>
               <div class="preview">${esc(who + (lm.text || ""))}</div>
-              <div>${c.needs_attention ? '<span class="pill att">Нужен владелец</span>' : ""}${!c.ai_enabled ? '<span class="pill off">AI выкл</span>' : ""}${paused ? '<span class="pill pause">Вы ведёте</span>' : ""}${c.unread ? `<span class="pill unread">${c.unread}</span>` : ""}</div>
+              <div>${c.needs_attention ? '<span class="pill att">Нужен владелец</span>' : ""}${!c.ai_enabled ? '<span class="pill off">AI выкл</span>' : ""}${paused ? '<span class="pill pause">Вы ведёте</span>' : ""}${c.followup_mode === "persistent" ? '<span class="pill pause">🔔 настойчиво</span>' : c.followup_mode === "off" ? '<span class="pill off">🔕</span>' : ""}${c.unread ? `<span class="pill unread">${c.unread}</span>` : ""}</div>
             </div></a>`;
         })
         .join("");
@@ -297,7 +297,15 @@
         ${paused ? '<button class="btn" data-a="resume">▶️ Вернуть AI</button>' : '<button class="btn" data-a="pause">⏸ Пауза AI 12 ч</button>'}
         ${c.needs_attention ? '<button class="btn" data-a="done">✅ Решено</button>' : ""}
         ${windowOpen ? '<button class="btn" data-a="now">⚡ AI ответит сейчас</button>' : ""}
-        <button class="btn danger" data-a="delete">🗑 Удалить данные</button>`;
+        <button class="btn danger" data-a="delete">🗑 Удалить данные</button>
+        <label class="fu-row"><span>🔔 Напоминания:</span>
+          <select id="fu-mode" class="lib-select">
+            <option value="default" ${c.followup_mode === "default" ? "selected" : ""}>по общей настройке</option>
+            <option value="once" ${c.followup_mode === "once" ? "selected" : ""}>1 раз</option>
+            <option value="persistent" ${c.followup_mode === "persistent" ? "selected" : ""}>настойчиво — пока не ответит</option>
+            <option value="off" ${c.followup_mode === "off" ? "selected" : ""}>выкл</option>
+          </select></label>
+        ${c.followup_mode === "persistent" ? `<span class="muted small">Отправлено напоминаний: ${Math.min(c.followup_count, 10)}. Только в бесплатные 24 часа после сообщения клиента.</span>` : ""}`;
       $("#chat").innerHTML = data.messages
         .map((m) => {
           const cls = m.direction === "in" ? "in" : m.sender;
@@ -312,6 +320,7 @@
     window.scrollTo(0, document.body.scrollHeight);
     $("#chat-actions").addEventListener("click", async (e) => {
       const a = e.target.dataset && e.target.dataset.a;
+      if (e.target.id === "fu-mode") return;
       if (!a) return;
       try {
         const u = `/api/contacts/${encodeURIComponent(waId)}`;
@@ -329,6 +338,18 @@
           location.hash = "#chats";
           return;
         }
+        data = await load();
+        paint();
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+    $("#chat-actions").addEventListener("change", async (e) => {
+      if (e.target.id !== "fu-mode") return;
+      try {
+        await api("PATCH", `/api/contacts/${encodeURIComponent(waId)}`, { followup_mode: e.target.value });
+        const names = { default: "по общей настройке", once: "1 раз", persistent: "настойчиво, пока не ответит", off: "выключены" };
+        toast("Напоминания: " + names[e.target.value] + " ✓");
         data = await load();
         paint();
       } catch (err) {
@@ -945,6 +966,9 @@
         <label class="check"><span>Напоминать, если клиент замолчал<br><span class="muted small">AI один раз напишет короткое сообщение по теме разговора. Бесплатно: только в течение 24 часов после сообщения клиента.</span></span><input type="checkbox" id="fu-on" ${s.followup_enabled ? "checked" : ""}></label>
         <label class="field">Через сколько часов после последнего ответа AI</label>
         <input type="text" inputmode="decimal" id="fu-hours" value="${s.followup_hours}">
+        <label class="field">Режим «настойчиво»: максимум напоминаний одному клиенту</label>
+        <input type="text" inputmode="numeric" id="fu-max" value="${s.followup_max}">
+        <p class="muted small">«Настойчиво» включается в диалоге конкретного клиента (🔔 Напоминания). AI пишет каждые N часов, пока клиент не ответит, и последнее — примерно через 21 час после сообщения клиента, пока окно WhatsApp ещё бесплатное. После 23 часов ничего не отправляется.</p>
         <button class="btn primary wide" id="fu-save">Сохранить</button>
         <p class="muted small">Не отправляется, если разговор передан вам, вы ведёте переписку сами, клиент отписался или AI выключен.</p>
       </div>
@@ -1016,8 +1040,10 @@
     $("#fu-save").addEventListener("click", async () => {
       const h = Number(String($("#fu-hours").value).replace(",", "."));
       if (!(h >= 0.5 && h <= 20)) return toast("Часы: от 0.5 до 20", true);
+      const mx = Number($("#fu-max").value);
+      if (!(Number.isInteger(mx) && mx >= 1 && mx <= 10)) return toast("Максимум: от 1 до 10", true);
       try {
-        await api("PUT", "/api/settings", { followup_enabled: $("#fu-on").checked, followup_hours: h });
+        await api("PUT", "/api/settings", { followup_enabled: $("#fu-on").checked, followup_hours: h, followup_max: mx });
         toast("Сохранено ✓");
       } catch (err) {
         toast(err.message, true);

@@ -168,6 +168,9 @@ const MIGRATIONS: string[] = [
      sent_at TIMESTAMPTZ,
      PRIMARY KEY (broadcast_id, wa_id)
    );`,
+  `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS followup_mode TEXT NOT NULL DEFAULT 'default';
+   ALTER TABLE contacts ADD COLUMN IF NOT EXISTS followup_count INTEGER NOT NULL DEFAULT 0;
+   UPDATE contacts SET followup_count = 1 WHERE followup_sent_at IS NOT NULL AND followup_sent_at > last_inbound_at;`,
 ];
 
 async function migrate(d: Db) {

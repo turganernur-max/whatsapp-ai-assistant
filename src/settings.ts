@@ -36,6 +36,7 @@ export const SettingsSchema = z.object({
   handoff_mode: z.enum(["rare", "balanced", "strict"]),
   followup_enabled: z.boolean(),
   followup_hours: z.number().min(0.5).max(20),
+  followup_max: z.number().int().min(1).max(10),
   template_price_usd: z.number().min(0).max(5),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -74,6 +75,7 @@ export const DEFAULT_SETTINGS: Settings = {
   handoff_mode: "balanced",
   followup_enabled: false,
   followup_hours: 3,
+  followup_max: 4,
   template_price_usd: 0.05,
 };
 

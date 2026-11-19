@@ -14,6 +14,8 @@ export interface Contact {
   last_message_at: Date | null;
   unread: number;
   followup_sent_at: Date | null;
+  followup_mode: "default" | "off" | "once" | "persistent";
+  followup_count: number;
   created_at: Date;
 }
 export interface Message {

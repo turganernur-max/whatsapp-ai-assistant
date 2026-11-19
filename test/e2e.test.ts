@@ -529,7 +529,7 @@ test("follow-up: one reminder when the client goes quiet, reset by a new message
   assert.equal(await runFollowups(), 0, "only once per client message");
 
   // paused contacts never get reminders
-  await getDb().query(`UPDATE contacts SET followup_sent_at = NULL, paused_until = now() + interval '1 hour' WHERE wa_id = '77010000030'`);
+  await getDb().query(`UPDATE contacts SET followup_count = 0, paused_until = now() + interval '1 hour' WHERE wa_id = '77010000030'`);
   assert.equal(await runFollowups(), 0);
   await updateSettings({ followup_enabled: false });
 });
@@ -608,4 +608,46 @@ test("templates can be created from the panel; invalid names rejected", async ()
   const created = createdTemplates.at(-1);
   assert.equal(created.name, "aksiya_dec");
   assert.deepEqual(created.components[0].example.body_text, [["Айгерим"]]);
+});
+
+test("persistent reminders per client: repeat until reply, last one before the 24h window closes, never after", async () => {
+  const { runFollowups } = await import("../src/campaigns.js");
+  await updateSettings({ followup_enabled: false, followup_hours: 2, followup_max: 3 });
+  await postWebhook(inbound("77010000050", "Ойланып көрейін"));
+  await drain();
+  const h = await login();
+  const r = await app.inject({ method: "PATCH", url: "/api/contacts/77010000050", headers: h, payload: { followup_mode: "persistent" } });
+  assert.equal(r.statusCode, 200);
+  const age = (sql: string) => getDb().query(sql);
+  const aiAgo = (hrs: number) => age(`UPDATE messages SET created_at = now() - interval '${hrs} hours' WHERE wa_id = '77010000050' AND sender = 'ai'`);
+  const clientAgo = (hrs: number) => age(`UPDATE contacts SET last_inbound_at = now() - interval '${hrs} hours' WHERE wa_id = '77010000050'`);
+
+  nextReply = { reply: "Еске салайын 🙂", handoff: false, handoff_reason: "", send_media: [] };
+  await aiAgo(3); await clientAgo(3);
+  assert.equal(await runFollowups(), 1, "reminder #1 (global switch off, but client is persistent)");
+  assert.equal(await runFollowups(), 0, "not again right away");
+  await aiAgo(3); await clientAgo(6);
+  assert.equal(await runFollowups(), 1, "reminder #2");
+  // near the end of the window: the final reminder goes out even before the interval passes
+  await aiAgo(1.5); await clientAgo(21.5);
+  assert.equal(await runFollowups(), 1, "final reminder #3 before the window closes");
+  const lastPrompt = claudeCalls.at(-1).messages.at(-1).content.map((b: any) => b.text).join(" ");
+  assert.match(lastPrompt, /последнее напоминание/);
+  await aiAgo(3); await clientAgo(21.8);
+  assert.equal(await runFollowups(), 0, "max reached");
+
+  // client replies → counter resets; after 23h nothing is sent (paid zone)
+  await postWebhook(inbound("77010000050", "Иә, жазыламын"));
+  await drain();
+  const [c] = await getDb().query(`SELECT followup_count FROM contacts WHERE wa_id = '77010000050'`);
+  assert.equal(c.followup_count, 0);
+  await aiAgo(5); await clientAgo(23.5);
+  assert.equal(await runFollowups(), 0, "never outside the free window");
+
+  // 'off' blocks reminders even when the global switch is on
+  await updateSettings({ followup_enabled: true });
+  await app.inject({ method: "PATCH", url: "/api/contacts/77010000050", headers: h, payload: { followup_mode: "off" } });
+  await aiAgo(5); await clientAgo(5);
+  assert.equal(await runFollowups(), 0);
+  await updateSettings({ followup_enabled: false });
 });

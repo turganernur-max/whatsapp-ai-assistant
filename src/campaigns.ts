@@ -12,23 +12,48 @@ import { sendAndStore } from "./processor.js";
 //    Sent only inside WhatsApp's free 24-hour window.
 // =====================================================================
 
-/** Contacts that should get a reminder now. */
-export async function dueFollowups(hours: number): Promise<string[]> {
-  const rows = await getDb().query<{ wa_id: string }>(
-    `SELECT c.wa_id FROM contacts c
+export interface DueFollowup {
+  wa_id: string;
+  followup_mode: string;
+  followup_count: number;
+  final: boolean;
+}
+
+/**
+ * Contacts that should get a reminder now. Everything stays inside WhatsApp's free
+ * 24-hour window (counted from the client's last message), so reminders never cost money.
+ *  - default: follows the global switch, one reminder
+ *  - once: one reminder for this client
+ *  - persistent: up to `max` reminders every `hours`, plus a last one ~21h after the
+ *    client's message so the window is used before it closes
+ *  - off: never
+ * The counter resets whenever the client writes again.
+ */
+export async function dueFollowups(hours: number, globalOn: boolean, max: number): Promise<DueFollowup[]> {
+  const rows = await getDb().query<DueFollowup & { last_inbound_at: Date }>(
+    `SELECT c.wa_id, c.followup_mode, c.followup_count,
+            (c.followup_mode = 'persistent' AND c.last_inbound_at < now() - interval '21 hours') AS final
+     FROM contacts c
      JOIN LATERAL (SELECT sender, created_at FROM messages m
                    WHERE m.wa_id = c.wa_id AND NOT (m.direction = 'out' AND m.status = 'failed')
                    ORDER BY m.id DESC LIMIT 1) last ON TRUE
      WHERE c.ai_enabled AND NOT c.opted_out AND NOT c.needs_attention
        AND (c.paused_until IS NULL OR c.paused_until < now())
-       AND c.last_inbound_at > now() - interval '22 hours'
-       AND (c.followup_sent_at IS NULL OR c.followup_sent_at < c.last_inbound_at)
+       AND c.last_inbound_at > now() - interval '23 hours'
        AND last.sender = 'ai'
-       AND last.created_at < now() - ($1::float8 * interval '1 hour')
+       AND (
+         (c.followup_mode = 'default' AND $2::boolean AND c.followup_count < 1
+            AND last.created_at < now() - ($1::float8 * interval '1 hour'))
+         OR (c.followup_mode = 'once' AND c.followup_count < 1
+            AND last.created_at < now() - ($1::float8 * interval '1 hour'))
+         OR (c.followup_mode = 'persistent' AND c.followup_count < $3::int
+            AND (last.created_at < now() - ($1::float8 * interval '1 hour')
+                 OR (c.last_inbound_at < now() - interval '21 hours' AND last.created_at < now() - interval '1 hour')))
+       )
      LIMIT 20`,
-    [hours],
+    [hours, globalOn, max],
   );
-  return rows.map((r) => r.wa_id);
+  return rows;
 }
 
 let followupRunning = false;
@@ -39,20 +64,23 @@ export async function runFollowups(): Promise<number> {
   let sent = 0;
   try {
     const s = await getSettings();
-    if (!s.ai_enabled || !s.followup_enabled || !config.waToken) return 0;
+    if (!s.ai_enabled || !config.waToken) return 0;
     if (s.monthly_budget_usd > 0 && (await monthSpendUsd()) >= s.monthly_budget_usd) return 0;
-    const ids = await dueFollowups(s.followup_hours);
-    if (!ids.length) return 0;
+    const due = await dueFollowups(s.followup_hours, s.followup_enabled, s.followup_max);
+    if (!due.length) return 0;
     const kb = await getKnowledge();
-    for (const waId of ids) {
-      // Mark first so a crash or error never causes a second reminder.
-      await updateContact(waId, { followup_sent_at: new Date() });
+    for (const f of due) {
+      const waId = f.wa_id;
+      const attempt = f.followup_count + 1;
+      // Count first so a crash or error never causes an extra reminder.
+      await getDb().query(`UPDATE contacts SET followup_count = followup_count + 1, followup_sent_at = now() WHERE wa_id = $1`, [waId]);
       try {
         const hist = await getDb().query<{ sender: HistoryItem["sender"]; text: string | null; type: string }>(
           `SELECT sender, text, type FROM (SELECT id, sender, text, type FROM messages WHERE wa_id = $1
              AND NOT (direction = 'out' AND status = 'failed') ORDER BY id DESC LIMIT $2) t ORDER BY id`,
           [waId, s.history_messages],
         );
+        const final = f.followup_mode === "persistent" && (f.final || attempt >= s.followup_max);
         const decision = await generateReply(
           s,
           kb,
@@ -60,7 +88,7 @@ export async function runFollowups(): Promise<number> {
           hist.map((h) => ({ sender: h.sender, text: h.text ?? `[${h.type}]` })),
           [],
           [],
-          { followupHours: s.followup_hours },
+          { followupHours: s.followup_hours, followupAttempt: attempt, followupFinal: final },
         );
         await recordUsage({
           kind: "chat",
@@ -72,9 +100,13 @@ export async function runFollowups(): Promise<number> {
           cache_write_tokens: decision.usage.cache_creation_input_tokens,
           cost_usd: costUsd(decision.model, decision.usage),
         });
-        if (!decision.reply.trim() || decision.handoff) continue;
+        if (!decision.reply.trim() || decision.handoff) {
+          // AI judged a reminder inappropriate: stop reminding until the client writes again.
+          await getDb().query(`UPDATE contacts SET followup_count = 99 WHERE wa_id = $1`, [waId]);
+          continue;
+        }
         await sendAndStore(waId, decision.reply, "ai");
-        await logEvent("followup", waId, decision.reply.slice(0, 200));
+        await logEvent("followup", waId, `#${attempt}: ${decision.reply.slice(0, 200)}`);
         sent++;
       } catch (e) {
         console.warn("[followup]", waId, (e as Error).message);

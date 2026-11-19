@@ -76,7 +76,8 @@ async function onInbound(ev: wa.InboundMessage) {
   if (!msg) return; // duplicate delivery from Meta — already handled
   await getDb().query(
     `UPDATE contacts SET last_inbound_at = GREATEST(COALESCE(last_inbound_at, $2), $2),
-       last_message_at = GREATEST(COALESCE(last_message_at, $2), $2), unread = unread + 1 WHERE wa_id = $1`,
+       last_message_at = GREATEST(COALESCE(last_message_at, $2), $2), unread = unread + 1,
+       followup_count = 0 WHERE wa_id = $1`,
     [ev.from, created],
   );
   if (ev.type === "reaction") return;

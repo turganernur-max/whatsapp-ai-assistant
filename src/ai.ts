@@ -178,7 +178,7 @@ export async function generateReply(
   history: HistoryItem[],
   images: ImageInput[],
   media: MediaOption[] = [],
-  opts: { followupHours?: number } = {},
+  opts: { followupHours?: number; followupAttempt?: number; followupFinal?: boolean } = {},
 ): Promise<AiDecision> {
   if (!config.anthropicApiKey && !client) throw new AiError("ANTHROPIC_API_KEY не настроен", false);
   const nowText = new Intl.DateTimeFormat("ru-RU", {
@@ -196,7 +196,7 @@ export async function generateReply(
       images,
       nowText,
       opts.followupHours
-        ? `клиент не отвечает уже около ${opts.followupHours} ч после твоего последнего сообщения. Напиши ОДНО короткое ненавязчивое напоминание (1–2 предложения) на языке клиента: продолжи разговор по смыслу, предложи помощь или следующий шаг. Не повторяй предыдущее сообщение, не дави, не придумывай новых фактов и скидок. Файлы не отправляй. Если по смыслу разговора напоминание неуместно (клиент попрощался, вопрос решён, разговор передан владельцу) — верни пустой reply и handoff=false.`
+        ? `клиент не отвечает уже около ${opts.followupHours} ч после твоего последнего сообщения. Это напоминание №${opts.followupAttempt ?? 1}. Напиши ОДНО короткое вежливое напоминание (1–2 предложения) на языке клиента: продолжи разговор по смыслу, предложи помощь или следующий шаг. Каждое напоминание формулируй по-новому, не повторяй прошлые сообщения, не дави, не придумывай новых фактов и скидок. Файлы не отправляй.${opts.followupFinal ? " Это последнее напоминание: мягко скажи, что будешь рад ответу, когда клиенту будет удобно." : ""} Если по смыслу разговора напоминание неуместно (клиент попрощался, вопрос решён, разговор передан владельцу) — верни пустой reply и handoff=false.`
         : undefined,
     ),
     output_config: { effort: s.effort, format: { type: "json_schema", schema: OUTPUT_SCHEMA as any } },
