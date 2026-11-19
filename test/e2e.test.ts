@@ -489,3 +489,11 @@ test("media chosen by the AI is still sent when the conversation is handed to th
   assert.equal(c.needs_attention, true);
   assert.match(claudeCalls[0].system[0].text, /ОБЯЗАН указать его ID в send_media/);
 });
+
+test("panel files are served with no-cache so phones pick up new versions", async () => {
+  for (const url of ["/", "/app.js", "/style.css"]) {
+    const r = await app.inject({ url });
+    assert.equal(r.statusCode, 200, url);
+    assert.equal(r.headers["cache-control"], "no-cache", url);
+  }
+});

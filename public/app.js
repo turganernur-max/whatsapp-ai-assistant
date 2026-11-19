@@ -720,7 +720,7 @@
         <div class="meter"><span data-w="${pct.toFixed(1)}" class="${pct >= 90 ? "hot" : ""}"></span></div>
         <p class="muted small">Средняя стоимость одного ответа AI: ${money(c.avg_per_reply)}. Когда лимит исчерпан, AI перестаёт отвечать и передаёт клиентов вам.</p>
         <label class="field">Месячный лимит, $ (0 = без лимита)</label>
-        <div class="row"><input type="number" id="budget" class="grow" min="0" step="1" inputmode="decimal" value="${c.monthly_budget}"><button class="btn primary" id="budget-save">Сохранить</button></div>
+        <div class="row"><input type="text" id="budget" class="grow" inputmode="decimal" autocomplete="off" value="${c.monthly_budget}"><button class="btn primary" id="budget-save">Сохранить</button></div>
         <p class="muted small">Оценка по прайсу Anthropic; точная сумма — в консоли Claude (platform.claude.com → Billing). Рекомендуется также поставить лимит расходов там.</p>
       </div>
       <div class="card"><h3>По дням</h3>${c.byDay.length ? bars(c.byDay.map((d) => ({ ...d, cost_c: Math.round(d.cost * 10000) })), "cost_c", "day") : '<p class="muted">Нет расходов в этом месяце</p>'}</div>
@@ -730,7 +730,7 @@
       <div class="card"><h3>По месяцам</h3><table>${c.months.map((m) => `<tr><td>${esc(m.month)}</td><td class="num">${money(m.cost)}</td></tr>`).join("")}</table></div>`;
     $("#to-stats").addEventListener("click", () => (location.hash = "#stats"));
     $("#budget-save").addEventListener("click", async () => {
-      const v = Number(String($("#budget").value).replace(",", "."));
+      const v = Number(String($("#budget").value).replace(/\s/g, "").replace(",", "."));
       if (!Number.isFinite(v) || v < 0) return toast("Введите число, например 10", true);
       try {
         await api("PUT", "/api/settings", { monthly_budget_usd: v });
@@ -792,7 +792,7 @@
           <option value="strict" ${s.handoff_mode === "strict" ? "selected" : ""}>Часто — при любом сомнении</option>
         </select>
         <label class="field">Месячный лимит расходов, $ (0 = без лимита)</label>
-        <input type="number" id="monthly_budget_usd" min="0" step="1" value="${s.monthly_budget_usd}">
+        <input type="text" id="monthly_budget_usd" inputmode="decimal" autocomplete="off" value="${s.monthly_budget_usd}">
         <label class="field">Максимальная длина ответа, символов</label>
         <input type="number" id="max_reply_chars" min="100" max="4000" value="${s.max_reply_chars}">
         <label class="field">Сколько последних сообщений помнит AI в диалоге</label>
@@ -821,7 +821,7 @@
       </div>
       <button class="btn primary wide" id="save">Сохранить</button>`;
     $("#save").addEventListener("click", async () => {
-      const num = (id) => Number($("#" + id).value);
+      const num = (id) => Number(String($("#" + id).value).replace(/\s/g, "").replace(",", "."));
       try {
         await api("PUT", "/api/settings", {
           model: $("#model").value,

@@ -598,7 +598,14 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.get("/privacy.html", sendPrivacy);
   app.get("/privacy", sendPrivacy);
 
-  await app.register(fastifyStatic, { root: publicDir, index: ["index.html"], acceptRanges: false });
+  // no-cache: phones always revalidate, so a new panel version shows up right after a deploy.
+  await app.register(fastifyStatic, {
+    root: publicDir,
+    index: ["index.html"],
+    acceptRanges: false,
+    cacheControl: false,
+    setHeaders: (res) => res.header("Cache-Control", "no-cache"),
+  });
 
   return app;
 }
