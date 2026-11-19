@@ -343,3 +343,16 @@ test("crash recovery: unfinished messages are answered after restart, stale ones
   const [old] = await d.query(`SELECT status FROM messages WHERE wa_message_id = 'wamid.R2'`);
   assert.equal(old.status, "skipped");
 });
+
+test("privacy page is always served whole (Meta crawler sends Range requests)", async () => {
+  for (const url of ["/privacy.html", "/privacy"]) {
+    const r = await app.inject({ url, headers: { range: "bytes=0-100", "accept-encoding": "gzip, br" } });
+    assert.equal(r.statusCode, 200, url);
+    assert.match(String(r.headers["content-type"]), /text\/html/);
+    assert.match(String(r.headers["cache-control"]), /no-transform/);
+    assert.equal(r.headers["content-encoding"], undefined);
+    assert.match(r.body, /Privacy Policy/);
+  }
+  const js = await app.inject({ url: "/app.js", headers: { range: "bytes=0-10" } });
+  assert.equal(js.statusCode, 200);
+});

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import cookie from "@fastify/cookie";
@@ -441,7 +442,22 @@ export async function buildServer(): Promise<FastifyInstance> {
     return reply.code(code).send({ error: code >= 500 ? "Внутренняя ошибка сервера" : err.message });
   });
 
-  await app.register(fastifyStatic, { root: path.resolve(process.cwd(), "public"), index: ["index.html"] });
+  // Privacy policy page: Meta's crawler checks this URL before an app can be published.
+  // Always return the complete page (200, never a partial 206 response) and ask proxies
+  // not to re-encode it — otherwise Meta reports "BAD_CONTENT_ENCODING".
+  const publicDir = path.resolve(process.cwd(), "public");
+  const privacyHtml = fs.readFileSync(path.join(publicDir, "privacy.html"));
+  const sendPrivacy = async (_req: FastifyRequest, reply: FastifyReply) =>
+    reply
+      .code(200)
+      .header("Content-Type", "text/html; charset=utf-8")
+      .header("Cache-Control", "public, max-age=300, no-transform")
+      .header("Accept-Ranges", "none")
+      .send(privacyHtml);
+  app.get("/privacy.html", sendPrivacy);
+  app.get("/privacy", sendPrivacy);
+
+  await app.register(fastifyStatic, { root: publicDir, index: ["index.html"], acceptRanges: false });
 
   return app;
 }
