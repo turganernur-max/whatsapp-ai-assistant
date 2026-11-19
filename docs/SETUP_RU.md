@@ -52,22 +52,20 @@
 1. Откройте **https://render.com** → **Get Started** → войдите через **GitHub**.
 2. Разрешите Render доступ к репозиторию **whatsapp-ai-assistant**.
 3. Нажмите **New + → Blueprint** → выберите репозиторий `whatsapp-ai-assistant`.
-   Ветка (Branch): `claude/whatsapp-ai-assistant-iw6ljf` (или `main`, если код уже объединён туда).
+   Ветка (Branch): **`main`**.
 4. Render прочитает файл `render.yaml` и попросит заполнить значения:
 
    | Поле | Что вписать |
    |---|---|
    | `ADMIN_PASSWORD` | придумайте пароль для панели, **не короче 10 символов** |
-   | `PUBLIC_URL` | пока оставьте `https://whatsapp-ai-assistant.onrender.com`, исправим после запуска |
    | `DATABASE_URL` | строка из шага 2 |
    | `ANTHROPIC_API_KEY` | ключ из шага 1 |
    | `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_BUSINESS_ACCOUNT_ID`, `META_APP_SECRET` | пока оставьте пустыми, заполним в шаге 4 |
    | `STT_API_KEY`, `NTFY_TOPIC` | пусто (необязательные, шаги 8–9) |
 
-   `SESSION_SECRET` и `WEBHOOK_VERIFY_TOKEN` Render создаст сам.
+   `SESSION_SECRET` и `WEBHOOK_VERIFY_TOKEN` Render создаст сам. Адрес сервера и порт программа узнаёт от Render автоматически.
 5. Нажмите **Apply / Deploy**. Подождите 3–5 минут, пока статус станет **Live**.
 6. Вверху страницы сервиса будет адрес вида `https://whatsapp-ai-assistant-xxxx.onrender.com`.
-   - Откройте **Environment** → поменяйте `PUBLIC_URL` на этот адрес → **Save Changes**.
    - Откройте `адрес/health` — должно быть `{"ok":true,...}`.
    - Откройте сам адрес → войдите с паролем `ADMIN_PASSWORD`. Это ваша **панель управления**.
    - Safari → **Поделиться → На экран «Домой»** — панель будет открываться как приложение.

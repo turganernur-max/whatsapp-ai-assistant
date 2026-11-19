@@ -6,7 +6,8 @@ function env(name: string, fallback = ""): string {
 
 export const config = {
   port: Number(env("PORT", "3000")),
-  publicUrl: env("PUBLIC_URL"), // e.g. https://my-assistant.onrender.com
+  // Public https address. On Render it is detected automatically (RENDER_EXTERNAL_URL).
+  publicUrl: env("PUBLIC_URL", env("RENDER_EXTERNAL_URL")),
   nodeEnv: env("NODE_ENV", "development"),
 
   // Database: Postgres URL in production; otherwise an embedded Postgres (PGlite) in DATA_DIR.

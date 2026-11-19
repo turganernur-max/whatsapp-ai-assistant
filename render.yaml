@@ -1,4 +1,6 @@
-# Render Blueprint: Render → New → Blueprint → выберите этот репозиторий.
+# Render Blueprint: Render → New → Blueprint → репозиторий whatsapp-ai-assistant, ветка main.
+# Секреты (ключи, пароли, DATABASE_URL) вводятся только в Render, в GitHub их нет.
+# PORT и адрес сервиса (RENDER_EXTERNAL_URL) Render задаёт сам.
 services:
   - type: web
     name: whatsapp-ai-assistant
@@ -19,8 +21,6 @@ services:
       - key: WEBHOOK_VERIFY_TOKEN
         generateValue: true
       - key: ADMIN_PASSWORD
-        sync: false
-      - key: PUBLIC_URL
         sync: false
       - key: DATABASE_URL
         sync: false
