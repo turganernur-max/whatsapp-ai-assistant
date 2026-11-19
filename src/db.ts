@@ -200,6 +200,13 @@ const MIGRATIONS: string[] = [
      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
    );
    CREATE INDEX IF NOT EXISTS orders_status_idx ON orders (status, id);`,
+  // New behaviour: a handoff no longer silences the AI. Resume chats that were paused only
+  // because of a handoff (the owner has not written there since).
+  `UPDATE settings SET value = 'false'::jsonb, updated_at = now() WHERE key = 'pause_after_handoff';
+   UPDATE contacts c SET paused_until = NULL
+   WHERE c.needs_attention AND c.paused_until > now()
+     AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.wa_id = c.wa_id AND m.sender = 'owner'
+                     AND m.created_at > now() - interval '24 hours');`,
 ];
 
 async function migrate(d: Db) {

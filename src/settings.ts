@@ -69,7 +69,7 @@ export const DEFAULT_SETTINGS: Settings = {
   handoff_message:
     "Спасибо! Я передал ваш вопрос владельцу, он ответит вам лично в ближайшее время.",
   owner_takeover_hours: 12,
-  pause_after_handoff: true,
+  pause_after_handoff: false, // AI keeps talking after a handoff; it stops only when the owner writes
   monthly_budget_usd: 10,
   max_ai_replies_per_hour: 20,
   opt_out_words: "стоп, stop, тоқта, отписаться",

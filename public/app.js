@@ -870,7 +870,10 @@
       const f = e.target.files[0];
       $("#m-note").textContent = "";
       if (!f) return;
-      if (!$("#m-title").value) $("#m-title").value = (f.name || "").replace(/\.[^.]+$/, "");
+      const base = (f.name || "").replace(/\.[^.]+$/, "");
+      const cameraName = /^(img|vid|mov|dsc|pxl|image|video)[_-]?\d+$/i.test(base) || /^[0-9a-f-]{20,}$/i.test(base);
+      if (!$("#m-title").value && !cameraName) $("#m-title").value = base;
+      if (cameraName && !$("#m-title").value) $("#m-title").focus();
       if (f.type.startsWith("video/"))
         $("#m-note").textContent = "Видео будет автоматически переделано в формат WhatsApp (MP4, до 16 МБ). Загрузка может занять 1–3 минуты.";
     });
@@ -1073,7 +1076,7 @@
         ${chk("human_delay", "Пауза «печатает…» перед ответом", "2–9 секунд в зависимости от длины, как у человека")}
         ${chk("disclosure_enabled", "Сообщать, что отвечает AI", "Первое сообщение каждому новому клиенту начинается с этого текста")}
         <textarea id="disclosure_text">${esc(s.disclosure_text)}</textarea>
-        ${chk("pause_after_handoff", "Пауза AI после передачи владельцу", "AI замолкает в этом диалоге, пока вы не ответите или не вернёте AI")}
+        ${chk("pause_after_handoff", "Замолкать после передачи владельцу", "Выключено (рекомендуется): AI сообщает вам и продолжает разговор, пока вы сами не напишете клиенту. Включено: AI молчит в этом диалоге до вашего ответа.")}
         <label class="field">Сообщение клиенту при передаче владельцу</label>
         <textarea id="handoff_message">${esc(s.handoff_message)}</textarea>
         <label class="field">Когда вы отвечаете сами, AI молчит в этом диалоге (часов)</label>

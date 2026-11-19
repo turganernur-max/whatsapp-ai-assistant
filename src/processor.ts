@@ -209,9 +209,11 @@ async function release(ids: number[], status: string, error: string | null = nul
 }
 
 async function flagAttention(waId: string, reason: string, kind: string, notify = true) {
+  const before = await getContact(waId);
   await updateContact(waId, { needs_attention: true, attention_reason: reason });
   await logEvent(kind, waId, reason);
-  if (notify) {
+  // One push per open issue: don't repeat while the chat is already waiting for the owner.
+  if (notify && !(kind === "handoff" && before?.needs_attention)) {
     const c = await getContact(waId);
     await notifyOwner("Нужно ваше внимание", `${c?.name ?? "+" + waId}: ${reason}`, `/#chat/${waId}`);
   }

@@ -237,7 +237,8 @@ test("AI switched off globally or per contact -> no reply", async () => {
   assert.equal(claudeCalls.length, 0);
 });
 
-test("handoff: owner notified, contact flagged and AI paused", async () => {
+test("handoff with 'pause after handoff' on: owner notified, contact flagged and AI paused", async () => {
+  await updateSettings({ pause_after_handoff: true });
   nextReply = { reply: "", handoff: true, handoff_reason: "Клиент просит возврат денег" };
   await postWebhook(inbound("77010000005", "Верните деньги!"));
   await drain();
@@ -736,4 +737,26 @@ test("sales mode off removes sales rules; unconfirmed orders are ignored", async
   assert.doesNotMatch(claudeCalls.at(-1).system[0].text, /ПРОДАЖИ \(ты ещё и продавец\)/);
   assert.equal((await getDb().query(`SELECT * FROM orders`)).length, 0);
   await updateSettings({ sales_mode: true });
+});
+
+test("default: after a handoff the AI keeps talking (one push per issue) until the owner writes", async () => {
+  const { DEFAULT_SETTINGS } = await import("../src/settings.js");
+  assert.equal(DEFAULT_SETTINGS.pause_after_handoff, false);
+  nextReply = { reply: "Нені ойландырып тұр — бағасы ма, сапасы ма?", handoff: true, handoff_reason: "Клиент сомневается", send_media: [] };
+  await postWebhook(inbound("77010000080", "Алмайтын сияқтымын"));
+  await drain();
+  nextReply = { reply: "Сапасы бойынша: сертификат бар, кепілдік 1 жыл.", handoff: false, handoff_reason: "", send_media: [] };
+  await postWebhook(inbound("77010000080", "Сапасы"));
+  await drain();
+  assert.equal(sent.length, 2, "AI answered the client after the handoff");
+  assert.match(sent[1].text.body, /кепілдік/);
+  const [c] = await getDb().query(`SELECT needs_attention, paused_until FROM contacts WHERE wa_id = '77010000080'`);
+  assert.equal(c.needs_attention, true, "still flagged for the owner");
+  assert.equal(c.paused_until, null);
+  // owner writes → AI stops
+  const h = await login();
+  await app.inject({ method: "POST", url: "/api/contacts/77010000080/send", headers: h, payload: { text: "Сәлем, Ернұр жазып тұр" } });
+  await postWebhook(inbound("77010000080", "Жақсы"));
+  await drain();
+  assert.equal(claudeCalls.length, 2, "AI silent once the owner took over");
 });
