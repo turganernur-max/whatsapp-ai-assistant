@@ -158,6 +158,11 @@
       b.textContent = o.attention;
       b.classList.remove("hidden");
     } else b.classList.add("hidden");
+    const bo = $("#badge-orders");
+    if (o.orders_attention > 0) {
+      bo.textContent = o.orders_attention;
+      bo.classList.remove("hidden");
+    } else bo.classList.add("hidden");
     return o;
   }
 
@@ -174,6 +179,8 @@
     whatsapp: renderWhatsapp,
     privacy: renderPrivacy,
     campaigns: renderCampaigns,
+    orders: renderOrders,
+    catalog: renderCatalog,
   };
   function stopPoll() {
     if (pollTimer) clearInterval(pollTimer);
@@ -190,7 +197,7 @@
     const [name, arg] = hash.split("/");
     currentRoute = hash;
     stopPoll();
-    const tabFor = { chat: "chats", costs: "stats", "ai-settings": "settings", whatsapp: "settings", privacy: "settings", campaigns: "settings" };
+    const tabFor = { chat: "chats", costs: "stats", "ai-settings": "settings", whatsapp: "settings", privacy: "settings", campaigns: "settings", catalog: "kb" };
     const tab = tabFor[name] || name;
     document.querySelectorAll(".tabbar a").forEach((a) => a.classList.toggle("active", a.dataset.tab === tab));
     const fn = routes[name] || renderChats;
@@ -496,6 +503,8 @@
           handoff: r.handoff,
           meta:
             (r.files && r.files.length ? "📎 отправит: " + r.files.join(", ") + " · " : "") +
+            (r.order ? "🛒 заказ: " + r.order.items + (r.order.total ? " — " + r.order.total + " ₸" : "") + " · " : "") +
+            (r.payment_claimed ? "💳 сообщил об оплате · " : "") +
             (r.handoff ? "➡️ передано владельцу: " + r.handoff_reason + " · " : "") +
             money(r.cost_usd),
         });
@@ -510,12 +519,241 @@
     });
   }
 
+  // ---------------- Orders ----------------
+  const ORDER_STATUS = {
+    new: { t: "🆕 Новый", next: "contacted" },
+    contacted: { t: "📞 Связались", next: "payment_check" },
+    payment_check: { t: "💳 Проверить оплату", next: "paid" },
+    paid: { t: "✅ Оплачен", next: "shipped" },
+    shipped: { t: "🚚 Отправлен", next: "done" },
+    done: { t: "🏁 Выполнен", next: null },
+    cancelled: { t: "✖ Отменён", next: null },
+  };
+  const tenge = (n) => (Number(n) > 0 ? Math.round(Number(n)).toLocaleString("ru-RU") + " ₸" : "—");
+  let orderFilter = "open";
+
+  async function renderOrders() {
+    title("Заказы");
+    const r = await api("GET", `/api/orders?status=${orderFilter}`);
+    const sm = r.summary;
+    view.innerHTML = `
+      <div class="stats-grid">
+        <div class="stat"><div class="v">${sm.open}</div><div class="l">Открытых заказов</div></div>
+        <div class="stat"><div class="v">${sm.payment_check}</div><div class="l">Проверить оплату</div></div>
+        <div class="stat"><div class="v">${sm.month_orders}</div><div class="l">Заказов за месяц</div></div>
+        <div class="stat"><div class="v">${tenge(sm.month_revenue)}</div><div class="l">Оплачено за месяц (${sm.month_paid})</div></div>
+      </div>
+      <div class="seg" id="o-seg">
+        <button data-f="open">Открытые</button><button data-f="payment_check">Оплата</button><button data-f="paid">Оплачены</button><button data-f="">Все</button>
+      </div>
+      <div id="o-list">${
+        r.items.length
+          ? r.items
+              .map((o) => {
+                const st = ORDER_STATUS[o.status] || { t: o.status };
+                const next = st.next ? ORDER_STATUS[st.next] : null;
+                return `<div class="card order">
+                  <div class="top row"><b class="grow">#${o.id} · ${esc(o.customer_name || o.contact_name || "+" + o.wa_id)}</b><span class="pill ${o.status === "payment_check" || o.status === "new" ? "att" : "off"}">${st.t}</span></div>
+                  <div class="o-items">${esc(o.items)}</div>
+                  <div class="row small"><b>${tenge(o.total)}</b><span class="muted">· ${fmtTime(o.created_at)}</span></div>
+                  ${o.city || o.address ? `<div class="small">📍 ${esc([o.city, o.address].filter(Boolean).join(", "))}</div>` : ""}
+                  ${o.delivery ? `<div class="small">🚚 ${esc(o.delivery)}</div>` : ""}
+                  ${o.comment ? `<div class="small muted">💬 ${esc(o.comment)}</div>` : ""}
+                  ${o.owner_note ? `<div class="small">📝 ${esc(o.owner_note)}</div>` : ""}
+                  <div class="row o-actions">
+                    <a class="btn" href="#chat/${encodeURIComponent(o.wa_id)}">💬 Чат</a>
+                    <a class="btn" href="tel:+${esc(o.wa_id)}">📞</a>
+                    ${next ? `<button class="btn primary" data-o="${o.id}" data-st="${st.next}">→ ${next.t}</button>` : ""}
+                    <select class="lib-select" data-o-sel="${o.id}">
+                      ${Object.entries(ORDER_STATUS).map(([k, v]) => `<option value="${k}" ${k === o.status ? "selected" : ""}>${v.t}</option>`).join("")}
+                    </select>
+                    <button class="btn" data-o-note="${o.id}">📝</button>
+                  </div>
+                </div>`;
+              })
+              .join("")
+          : '<div class="card muted">Заказов нет. Когда клиент подтвердит заказ в переписке, AI создаст его здесь и пришлёт вам уведомление.</div>'
+      }</div>`;
+    const seg = $("#o-seg");
+    seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.f === orderFilter));
+    seg.addEventListener("click", (e) => {
+      if (e.target.dataset.f === undefined) return;
+      orderFilter = e.target.dataset.f;
+      renderOrders();
+    });
+    const setStatus = async (id, status) => {
+      if (status === "paid" && !confirm("Вы проверили поступление денег в Kaspi?")) return;
+      if (status === "cancelled" && !confirm("Отменить заказ?")) return;
+      await api("PATCH", `/api/orders/${id}`, { status });
+      toast("Статус: " + ORDER_STATUS[status].t);
+      renderOrders();
+    };
+    $("#o-list").addEventListener("click", async (e) => {
+      const t = e.target;
+      try {
+        if (t.dataset.o) await setStatus(t.dataset.o, t.dataset.st);
+        if (t.dataset.oNote) {
+          const n = prompt("Заметка к заказу (видна только вам):");
+          if (n === null) return;
+          await api("PATCH", `/api/orders/${t.dataset.oNote}`, { owner_note: n });
+          renderOrders();
+        }
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+    $("#o-list").addEventListener("change", async (e) => {
+      if (!e.target.dataset.oSel) return;
+      try {
+        await setStatus(e.target.dataset.oSel, e.target.value);
+      } catch (err) {
+        toast(err.message, true);
+        renderOrders();
+      }
+    });
+    poll(async () => {
+      if (!location.hash.startsWith("#orders")) return;
+      const n = await api("GET", `/api/orders?status=${orderFilter}`);
+      if (JSON.stringify(n.items.map((o) => [o.id, o.status, o.updated_at])) !== JSON.stringify(r.items.map((o) => [o.id, o.status, o.updated_at]))) renderOrders();
+    }, 15000);
+  }
+
+  // ---------------- Catalog ----------------
+  async function renderCatalog() {
+    title("Каталог");
+    const [{ items }, lib] = await Promise.all([api("GET", "/api/catalog"), api("GET", "/api/media")]);
+    const mediaById = Object.fromEntries(lib.items.map((m) => [m.id, m]));
+    view.innerHTML = `
+      <div class="row"><a href="#kb" class="btn">← Знания</a></div>
+      <div class="banner ok small">AI предлагает и продаёт только то, что есть в каталоге, по этим ценам. Отметка «нет в наличии» — AI не будет это предлагать.</div>
+      <div class="card">
+        <h3 id="c-form-title">Добавить товар или услугу</h3>
+        <input type="hidden" id="c-id">
+        <div class="seg" id="c-kind"><button data-k="product" class="on">Товар</button><button data-k="service">Услуга</button></div>
+        <label class="field">Название</label><input type="text" id="c-name" placeholder="Например: Крем для лица 50 мл">
+        <label class="field">Категория (необязательно)</label><input type="text" id="c-cat" placeholder="Например: Уход за кожей">
+        <label class="field">Цена, ₸</label><input type="text" inputmode="numeric" id="c-price" placeholder="19500">
+        <label class="field">Уточнение к цене (необязательно)</label><input type="text" id="c-note" placeholder="от / за 60 мин / за 1 кг">
+        <label class="field">Описание: что это, для кого, польза, состав/что входит</label><textarea id="c-desc" class="short"></textarea>
+        <label class="check"><span>Есть в наличии / доступно</span><input type="checkbox" id="c-stock" checked></label>
+        <label class="field">Фото (необязательно)</label>
+        <input type="file" id="c-file" accept="image/*">
+        <p class="muted small" id="c-photo-note"></p>
+        <div class="row"><button class="btn primary grow" id="c-save">Сохранить</button><button class="btn hidden" id="c-cancel">Отмена</button></div>
+      </div>
+      <div class="list" id="c-list">${
+        items.length
+          ? items
+              .map((c) => {
+                const m = c.media_id ? mediaById[c.media_id] : null;
+                return `<div class="item"><div class="thumb">${m && m.kind === "image" ? `<img src="/api/media/${m.id}/file" alt="" loading="lazy">` : `<span>${c.kind === "service" ? "🛎" : "📦"}</span>`}</div>
+                  <div class="body">
+                    <div class="top"><span class="name">${esc(c.name)}</span><span class="time">${c.price_note ? esc(c.price_note) + " " : ""}${tenge(c.price)}</span></div>
+                    <div class="preview">${esc(c.category ? c.category + " · " : "")}${esc(c.description || "")}</div>
+                    <div class="row small">
+                      <label class="row"><input type="checkbox" data-c-stock="${c.id}" ${c.in_stock ? "checked" : ""}> в наличии</label>
+                      <button class="btn" data-c-edit="${c.id}">Изменить</button><button class="btn danger" data-c-del="${c.id}">Удалить</button>
+                    </div>
+                  </div></div>`;
+              })
+              .join("")
+          : '<div class="item"><div class="body muted">Каталог пуст. Добавьте товары или услуги — AI начнёт их предлагать.</div></div>'
+      }</div>`;
+    let kind = "product";
+    let mediaId = null;
+    const setKind = (k) => {
+      kind = k;
+      $("#c-kind").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.k === k));
+    };
+    $("#c-kind").addEventListener("click", (e) => e.target.dataset.k && setKind(e.target.dataset.k));
+    const reset = () => {
+      $("#c-id").value = "";
+      ["#c-name", "#c-cat", "#c-price", "#c-note", "#c-desc"].forEach((s) => ($(s).value = ""));
+      $("#c-stock").checked = true;
+      $("#c-file").value = "";
+      $("#c-photo-note").textContent = "";
+      mediaId = null;
+      setKind("product");
+      $("#c-form-title").textContent = "Добавить товар или услугу";
+      $("#c-cancel").classList.add("hidden");
+    };
+    $("#c-cancel").addEventListener("click", reset);
+    $("#c-save").addEventListener("click", async () => {
+      const name = $("#c-name").value.trim();
+      if (!name) return toast("Напишите название", true);
+      const price = Number(String($("#c-price").value).replace(/\s/g, "").replace(",", ".") || 0);
+      if (!Number.isFinite(price) || price < 0) return toast("Цена — число", true);
+      const btn = $("#c-save");
+      btn.disabled = true;
+      try {
+        const file = $("#c-file").files[0];
+        if (file) {
+          btn.textContent = "Загружаю фото…";
+          const f = await preparePickedFile(file);
+          const m = await uploadRaw("/api/media/raw", f, { title: name, description: "фото из каталога: " + name });
+          mediaId = m.id;
+        }
+        const body = {
+          kind,
+          name,
+          category: $("#c-cat").value.trim(),
+          price,
+          price_note: $("#c-note").value.trim(),
+          description: $("#c-desc").value,
+          in_stock: $("#c-stock").checked,
+          media_id: mediaId,
+        };
+        const id = $("#c-id").value;
+        if (id) await api("PUT", `/api/catalog/${id}`, body);
+        else await api("POST", "/api/catalog", body);
+        toast("Сохранено ✓");
+        renderCatalog();
+      } catch (err) {
+        toast(err.message, true);
+        btn.disabled = false;
+        btn.textContent = "Сохранить";
+      }
+    });
+    $("#c-list").addEventListener("click", async (e) => {
+      const t = e.target;
+      try {
+        if (t.dataset.cDel) {
+          if (!confirm("Удалить из каталога?")) return;
+          await api("DELETE", `/api/catalog/${t.dataset.cDel}`);
+          renderCatalog();
+        } else if (t.dataset.cEdit) {
+          const c = items.find((i) => String(i.id) === t.dataset.cEdit);
+          $("#c-id").value = c.id;
+          $("#c-name").value = c.name;
+          $("#c-cat").value = c.category;
+          $("#c-price").value = c.price || "";
+          $("#c-note").value = c.price_note;
+          $("#c-desc").value = c.description;
+          $("#c-stock").checked = c.in_stock;
+          mediaId = c.media_id;
+          $("#c-photo-note").textContent = c.media_id ? "Фото уже есть. Выберите новое, чтобы заменить." : "";
+          setKind(c.kind);
+          $("#c-form-title").textContent = "Изменить";
+          $("#c-cancel").classList.remove("hidden");
+          window.scrollTo(0, 0);
+        }
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+    $("#c-list").addEventListener("change", async (e) => {
+      if (!e.target.dataset.cStock) return;
+      await api("PUT", `/api/catalog/${e.target.dataset.cStock}`, { in_stock: e.target.checked }).catch((err) => toast(err.message, true));
+    });
+  }
+
   // ---------------- Knowledge base ----------------
   async function renderKb() {
     title("База знаний");
     const { items } = await api("GET", "/api/knowledge");
     const total = items.filter((i) => i.enabled).reduce((a, i) => a + Number(i.chars), 0);
     view.innerHTML = `
+      <a class="card menu-link" href="#catalog"><span>🛍 Каталог товаров и услуг</span><span>›</span></a>
       <div class="banner ok small">AI берёт факты (цены, адреса, услуги, условия) только отсюда. Всего активного текста: ${total.toLocaleString("ru-RU")} символов${total > 200000 ? " — это много, каждый ответ будет дороже" : ""}.</div>
       <div class="card">
         <h3 id="kb-form-title">Добавить раздел</h3>
@@ -824,6 +1062,13 @@
         <input type="text" id="timezone" value="${esc(s.timezone)}">
       </div>
       <div class="card">
+        ${chk("sales_mode", "Режим продаж", "AI выясняет потребность, предлагает из каталога, отвечает на возражения, оформляет заказ и даёт реквизиты для оплаты")}
+        <label class="field">Как оплатить (AI отправит это клиенту после подтверждения заказа)</label>
+        <textarea id="payment_instructions" placeholder="Оплата через Kaspi: переведите на номер +7 7XX XXX XX XX (Имя Ф.) или по ссылке Kaspi Pay: ... После оплаты пришлите, пожалуйста, чек.">${esc(s.payment_instructions)}</textarea>
+        <label class="field">Доставка и получение</label>
+        <textarea id="delivery_info" placeholder="Доставка по всему Казахстану: по городу — 1000 ₸, 1 день; в другие города — Kazpost/СДЭК 1500–2500 ₸, 2–5 дней. Самовывоз: адрес...">${esc(s.delivery_info)}</textarea>
+      </div>
+      <div class="card">
         ${chk("human_style", "Писать как живой человек", "Коротко, без шаблонных фраз робота, от лица бизнеса; длинный ответ — 2–3 сообщениями. Если клиент прямо спросит «вы бот?», AI честно ответит.")}
         ${chk("human_delay", "Пауза «печатает…» перед ответом", "2–9 секунд в зависимости от длины, как у человека")}
         ${chk("disclosure_enabled", "Сообщать, что отвечает AI", "Первое сообщение каждому новому клиенту начинается с этого текста")}
@@ -859,6 +1104,9 @@
           disclosure_enabled: $("#disclosure_enabled").checked,
           human_style: $("#human_style").checked,
           human_delay: $("#human_delay").checked,
+          sales_mode: $("#sales_mode").checked,
+          payment_instructions: $("#payment_instructions").value,
+          delivery_info: $("#delivery_info").value,
           disclosure_text: $("#disclosure_text").value,
           pause_after_handoff: $("#pause_after_handoff").checked,
           handoff_message: $("#handoff_message").value,

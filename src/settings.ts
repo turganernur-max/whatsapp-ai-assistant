@@ -39,6 +39,10 @@ export const SettingsSchema = z.object({
   followup_max: z.number().int().min(1).max(10),
   human_style: z.boolean(),
   human_delay: z.boolean(),
+  sales_mode: z.boolean(),
+  payment_instructions: z.string().max(3000),
+  delivery_info: z.string().max(5000),
+  currency: z.string().max(10),
   template_price_usd: z.number().min(0).max(5),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -80,6 +84,10 @@ export const DEFAULT_SETTINGS: Settings = {
   followup_max: 4,
   human_style: true,
   human_delay: true,
+  sales_mode: true,
+  payment_instructions: "",
+  delivery_info: "",
+  currency: "₸",
   template_price_usd: 0.05,
 };
 

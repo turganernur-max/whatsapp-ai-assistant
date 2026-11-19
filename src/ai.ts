@@ -20,9 +20,32 @@ export interface MediaOption {
   description: string;
   kind: "image" | "video" | "document";
 }
+export interface CatalogItem {
+  id: number;
+  kind: "product" | "service";
+  name: string;
+  category: string;
+  price: number;
+  price_note: string;
+  description: string;
+  in_stock: boolean;
+  media_id: number | null;
+}
+export interface OrderDraft {
+  confirmed: boolean;
+  items: string;
+  total: number;
+  customer_name: string;
+  city: string;
+  address: string;
+  delivery: string;
+  comment: string;
+}
 export interface AiDecision {
   reply: string;
   mediaIds: number[];
+  order: OrderDraft | null;
+  paymentClaimed: boolean;
   handoff: boolean;
   handoffReason: string;
   model: string;
@@ -54,8 +77,25 @@ const OUTPUT_SCHEMA = {
       items: { type: "integer" },
       description: "ID файлов из медиатеки, которые нужно отправить клиенту вместе с ответом. Пусто, если не нужно.",
     },
+    order: {
+      type: "object",
+      description: "Данные заказа/записи, собранные в разговоре. confirmed=true ТОЛЬКО когда клиент явно подтвердил итоговый заказ.",
+      properties: {
+        confirmed: { type: "boolean" },
+        items: { type: "string", description: "Что заказано: позиции и количество, например «Крем X ×2; Массаж 60 мин ×1». Пусто, если ничего." },
+        total: { type: "number", description: "Итоговая сумма в тенге по ценам каталога (0, если неизвестна)." },
+        customer_name: { type: "string" },
+        city: { type: "string" },
+        address: { type: "string", description: "Адрес доставки или удобные дата/время для услуги." },
+        delivery: { type: "string", description: "Способ доставки/получения." },
+        comment: { type: "string" },
+      },
+      required: ["confirmed", "items", "total", "customer_name", "city", "address", "delivery", "comment"],
+      additionalProperties: false,
+    },
+    payment_claimed: { type: "boolean", description: "true, если клиент сообщил об оплате или прислал чек/скрин оплаты." },
   },
-  required: ["reply", "handoff", "handoff_reason", "send_media"],
+  required: ["reply", "handoff", "handoff_reason", "send_media", "order", "payment_claimed"],
   additionalProperties: false,
 } as const;
 
@@ -75,7 +115,8 @@ const CORE_RULES = `Ты ведёшь переписку в WhatsApp от име
 
 10. Фото, видео и файлы: можно отправлять только файлы из раздела «МЕДИАТЕКА» ниже, указав их ID в send_media. Отправляй файл, когда клиент просит показать/прислать что-то или когда описание файла прямо говорит, в какой ситуации его отправлять. Не больше 3 файлов за раз; не повторяй файл, уже отправленный в этом диалоге, если только клиент не просит прислать его снова (тогда отправь). ВАЖНО: если в reply ты пишешь, что отправляешь фото/видео/файл («мына видеодан көріңіз 👇», «отправляю фото»), ты ОБЯЗАН указать его ID в send_media — даже когда handoff=true. Если подходящего файла нет в медиатеке — не пиши, что отправляешь его.
 
-Ответ строго в JSON по схеме: reply, handoff, handoff_reason, send_media.`;
+{SALES}
+Ответ строго в JSON по схеме: reply, handoff, handoff_reason, send_media, order, payment_claimed. Если заказа нет — order.confirmed=false и пустые поля.`;
 
 export const HANDOFF_RULES: Record<Settings["handoff_mode"], string> = {
   rare:
@@ -95,11 +136,29 @@ export const HUMAN_STYLE = `СТИЛЬ — КАК ЖИВОЙ МЕНЕДЖЕР В
 - Не начинай каждый ответ с приветствия — здоровайся только в начале разговора.
 - Задавай один уточняющий вопрос за раз, как делает человек.`;
 
-export function buildSystem(s: Settings, kb: KnowledgeItem[], learnedStyle: string[], media: MediaOption[] = []) {
+export const SALES_RULES = `ПРОДАЖИ (ты ещё и продавец)
+- Цель — помочь клиенту выбрать и оформить заказ или запись. Сначала 1–2 вопроса о потребности, затем конкретное предложение из КАТАЛОГА с ценой. Если подходит фото товара (поле «фото: ID»), приложи его через send_media.
+- Предлагай только то, что есть в КАТАЛОГЕ и в наличии; цены — только из каталога. Нет в наличии — честно скажи и предложи похожее из каталога.
+- Уместно предложи одно дополнение (сопутствующий товар/услугу), без навязчивости.
+- Возражения: «дорого» — объясни, что входит и в чём польза, напомни про доставку/условия из базы; «подумаю» — спроси, что смущает, и помоги; «потом» — предложи напомнить. Не дави, не спорь.
+- Никакой ложной срочности и выдуманного дефицита («только сегодня», «осталось 2 штуки»), скидки — только из базы знаний.
+- Оформление: собери что и сколько, имя, город и адрес доставки (для товаров) или удобные дату/время (для услуг). Телефон не спрашивай — номер WhatsApp уже известен. Перед подтверждением коротко повтори заказ, сумму и доставку и спроси «Подтверждаете?». Только после явного «да» ставь order.confirmed=true и заполни поля; до этого order.confirmed=false (поля можно заполнять тем, что уже известно).
+- Сразу после подтверждения отправь инструкцию по оплате из раздела ОПЛАТА (дословно реквизиты/ссылку) и скажи, что после оплаты нужно прислать чек.
+- Если клиент пишет, что оплатил, или присылает чек/скриншот — payment_claimed=true; ответь, что передал оплату на проверку и скоро подтвердят. Никогда не подтверждай оплату сам.
+- Не принимай оплату другими способами и не давай реквизиты, которых нет в разделе ОПЛАТА.`;
+
+export function buildSystem(
+  s: Settings,
+  kb: KnowledgeItem[],
+  learnedStyle: string[],
+  media: MediaOption[] = [],
+  catalog: CatalogItem[] = [],
+) {
   const parts: string[] = [
     CORE_RULES.replace("{MAX_CHARS}", String(s.max_reply_chars))
       .replace("{HANDOFF_RULES}", HANDOFF_RULES[s.handoff_mode] ?? HANDOFF_RULES.balanced)
-      .replace("{HUMAN_STYLE}", s.human_style ? HUMAN_STYLE : ""),
+      .replace("{HUMAN_STYLE}", s.human_style ? HUMAN_STYLE : "")
+      .replace("{SALES}", s.sales_mode ? SALES_RULES + "\n" : ""),
   ];
   if (s.business_name || s.owner_name) {
     parts.push(
@@ -114,6 +173,23 @@ export function buildSystem(s: Settings, kb: KnowledgeItem[], learnedStyle: stri
     ? kb.map((k, i) => `### ${i + 1}. ${k.title}\n${k.content.trim()}`).join("\n\n")
     : "(база знаний пуста — на фактические вопросы отвечай, что уточнишь у владельца)";
   parts.push(`БАЗА ЗНАНИЙ (единственный источник фактов)\n${kbText}`);
+  if (catalog.length) {
+    const fmt = (n: number) => (n > 0 ? `${n.toLocaleString("ru-RU")} ${s.currency}` : "цена по запросу");
+    parts.push(
+      "КАТАЛОГ (товары и услуги; цены и наличие — только отсюда)\n" +
+        catalog
+          .map(
+            (c) =>
+              `- [${c.kind === "service" ? "услуга" : "товар"}] ${c.name}${c.category ? ` (${c.category})` : ""} — ${c.price_note ? c.price_note + " " : ""}${fmt(c.price)}` +
+              `${c.in_stock ? "" : " — НЕТ В НАЛИЧИИ"}${c.media_id ? ` — фото: ID ${c.media_id}` : ""}${c.description.trim() ? `\n  ${c.description.trim().replace(/\s+/g, " ")}` : ""}`,
+          )
+          .join("\n"),
+    );
+  }
+  if (s.sales_mode) {
+    parts.push(`ОПЛАТА\n${s.payment_instructions.trim() || "(не заполнено — оплату не обсуждай, передай владельцу)"}`);
+    parts.push(`ДОСТАВКА И ПОЛУЧЕНИЕ\n${s.delivery_info.trim() || "(не заполнено — условия доставки уточнит владелец)"}`);
+  }
   const kindName = { image: "фото", video: "видео", document: "файл" } as const;
   parts.push(
     `МЕДИАТЕКА (файлы, которые можно отправить клиенту через send_media)\n` +
@@ -190,7 +266,7 @@ export async function generateReply(
   history: HistoryItem[],
   images: ImageInput[],
   media: MediaOption[] = [],
-  opts: { followupHours?: number; followupAttempt?: number; followupFinal?: boolean } = {},
+  opts: { followupHours?: number; followupAttempt?: number; followupFinal?: boolean; catalog?: CatalogItem[] } = {},
 ): Promise<AiDecision> {
   if (!config.anthropicApiKey && !client) throw new AiError("ANTHROPIC_API_KEY не настроен", false);
   const nowText = new Intl.DateTimeFormat("ru-RU", {
@@ -202,7 +278,7 @@ export async function generateReply(
   const params: Anthropic.Beta.MessageCreateParamsNonStreaming = {
     model: s.model,
     max_tokens: 8000,
-    system: buildSystem(s, kb, learnedStyle, media),
+    system: buildSystem(s, kb, learnedStyle, media, opts.catalog ?? []),
     messages: buildMessages(
       history,
       images,
@@ -240,7 +316,7 @@ export async function generateReply(
   const model = res.model || s.model;
 
   if (res.stop_reason === "refusal") {
-    return { reply: "", mediaIds: [], handoff: true, handoffReason: "AI отказался отвечать на это сообщение", model, usage };
+    return { reply: "", mediaIds: [], order: null, paymentClaimed: false, handoff: true, handoffReason: "AI отказался отвечать на это сообщение", model, usage };
   }
   const text = res.content
     .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
@@ -254,9 +330,26 @@ export async function generateReply(
       ? [...new Set(parsed.send_media.map(Number).filter((id: number) => allowed.has(id)))].slice(0, 3) as number[]
       : [];
     const handoff = Boolean(parsed.handoff) || (!reply && !mediaIds.length);
+    const o = parsed.order && typeof parsed.order === "object" ? parsed.order : null;
+    const str = (v: unknown, n = 500) => (typeof v === "string" ? v.trim().slice(0, n) : "");
+    const order: OrderDraft | null =
+      o && o.confirmed === true && str(o.items)
+        ? {
+            confirmed: true,
+            items: str(o.items, 1000),
+            total: Number.isFinite(Number(o.total)) && Number(o.total) > 0 ? Math.round(Number(o.total)) : 0,
+            customer_name: str(o.customer_name, 200),
+            city: str(o.city, 200),
+            address: str(o.address),
+            delivery: str(o.delivery, 200),
+            comment: str(o.comment),
+          }
+        : null;
     return {
       reply: reply.slice(0, Math.max(s.max_reply_chars * 2, 500)),
       mediaIds,
+      order,
+      paymentClaimed: parsed.payment_claimed === true,
       handoff,
       handoffReason: handoff ? String(parsed.handoff_reason || "AI не смог ответить") : "",
       model,
@@ -266,6 +359,8 @@ export async function generateReply(
     return {
       reply: "",
       mediaIds: [],
+      order: null,
+      paymentClaimed: false,
       handoff: true,
       handoffReason: res.stop_reason === "max_tokens" ? "Ответ AI оборван (лимит токенов)" : "AI вернул некорректный ответ",
       model,

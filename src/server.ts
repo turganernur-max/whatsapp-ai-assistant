@@ -11,6 +11,7 @@ import { getSettings, updateSettings, SettingsSchema, MODELS } from "./settings.
 import * as wa from "./whatsapp.js";
 import { handleEvents, ownerSend, ownerSendFile, schedule } from "./processor.js";
 import { addMedia, getMediaFile, listMedia, MediaError, MAX_RAW_UPLOAD } from "./media.js";
+import { aiSalesContext, ORDER_STATUSES } from "./sales.js";
 import { audience, BroadcastError, cancelBroadcast, createBroadcast, runBroadcasts } from "./campaigns.js";
 import { generateReply, AiError } from "./ai.js";
 import { costUsd } from "./pricing.js";
@@ -156,7 +157,8 @@ export async function buildServer(): Promise<FastifyInstance> {
            (SELECT COUNT(*)::int FROM contacts WHERE needs_attention) AS attention,
            (SELECT COUNT(*)::int FROM contacts WHERE last_inbound_at > now() - interval '24 hours') AS active,
            (SELECT COUNT(*)::int FROM messages WHERE direction='in' AND created_at > now() - interval '24 hours') AS inbound_today,
-           (SELECT COUNT(*)::int FROM messages WHERE sender='ai' AND created_at > now() - interval '24 hours') AS ai_today`,
+           (SELECT COUNT(*)::int FROM messages WHERE sender='ai' AND created_at > now() - interval '24 hours') AS ai_today,
+           (SELECT COUNT(*)::int FROM orders WHERE status IN ('new','payment_check')) AS orders_attention`,
       );
       return {
         ai_enabled: s.ai_enabled,
@@ -429,6 +431,88 @@ export async function buildServer(): Promise<FastifyInstance> {
       }
     });
 
+    // ----- Catalog (products & services) -----
+    const CatalogSchema = z.object({
+      kind: z.enum(["product", "service"]).default("product"),
+      name: z.string().trim().min(1).max(200),
+      category: z.string().trim().max(100).default(""),
+      price: z.number().min(0).max(1e9).default(0),
+      price_note: z.string().trim().max(50).default(""),
+      description: z.string().max(3000).default(""),
+      in_stock: z.boolean().default(true),
+      media_id: z.number().int().positive().nullable().default(null),
+    });
+    api.get("/api/catalog", async () => ({
+      items: await getDb().query(`SELECT * FROM catalog ORDER BY category, name, id`),
+    }));
+    api.post("/api/catalog", async (req) => {
+      const b = CatalogSchema.parse(req.body);
+      const [row] = await getDb().query(
+        `INSERT INTO catalog (kind, name, category, price, price_note, description, in_stock, media_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+        [b.kind, b.name, b.category, b.price, b.price_note, b.description, b.in_stock, b.media_id],
+      );
+      return row;
+    });
+    api.put("/api/catalog/:id", async (req, reply) => {
+      const b = CatalogSchema.partial().parse(req.body);
+      const keys = Object.keys(b) as (keyof typeof b)[];
+      if (!keys.length) return reply.code(400).send({ error: "Нет изменений" });
+      const sets = keys.map((k, i) => `${k} = $${i + 2}`).join(", ");
+      const [row] = await getDb().query(`UPDATE catalog SET ${sets} WHERE id = $1 RETURNING *`, [
+        Number((req.params as any).id),
+        ...keys.map((k) => (b as any)[k]),
+      ]);
+      if (!row) return reply.code(404).send({ error: "Не найдено" });
+      return row;
+    });
+    api.delete("/api/catalog/:id", async (req) => {
+      await getDb().query(`DELETE FROM catalog WHERE id = $1`, [Number((req.params as any).id)]);
+      return { ok: true };
+    });
+
+    // ----- Orders -----
+    api.get("/api/orders", async (req) => {
+      const q = req.query as { status?: string };
+      const where = q.status === "open"
+        ? `WHERE o.status IN ('new','contacted','payment_check')`
+        : q.status && (ORDER_STATUSES as readonly string[]).includes(q.status) ? `WHERE o.status = $1` : "";
+      const params = where.includes("$1") ? [q.status] : [];
+      const items = await getDb().query(
+        `SELECT o.*, c.name AS contact_name FROM orders o LEFT JOIN contacts c ON c.wa_id = o.wa_id ${where} ORDER BY o.id DESC LIMIT 300`,
+        params,
+      );
+      const [sum] = await getDb().query(
+        `SELECT
+           COUNT(*) FILTER (WHERE status IN ('new','contacted','payment_check'))::int AS open,
+           COUNT(*) FILTER (WHERE status = 'payment_check')::int AS payment_check,
+           COUNT(*) FILTER (WHERE created_at >= date_trunc('month', now()))::int AS month_orders,
+           COALESCE(SUM(total) FILTER (WHERE status IN ('paid','shipped','done') AND created_at >= date_trunc('month', now())), 0)::float8 AS month_revenue,
+           COUNT(*) FILTER (WHERE status IN ('paid','shipped','done') AND created_at >= date_trunc('month', now()))::int AS month_paid
+         FROM orders`,
+      );
+      return { items, summary: sum };
+    });
+    api.patch("/api/orders/:id", async (req, reply) => {
+      const b = z
+        .object({
+          status: z.enum(ORDER_STATUSES).optional(),
+          owner_note: z.string().max(2000).optional(),
+          total: z.number().min(0).max(1e10).optional(),
+        })
+        .strict()
+        .parse(req.body);
+      const keys = Object.keys(b) as (keyof typeof b)[];
+      if (!keys.length) return reply.code(400).send({ error: "Нет изменений" });
+      const sets = keys.map((k, i) => `${k} = $${i + 2}`).join(", ");
+      const [row] = await getDb().query(`UPDATE orders SET ${sets}, updated_at = now() WHERE id = $1 RETURNING *`, [
+        Number((req.params as any).id),
+        ...keys.map((k) => (b as any)[k]),
+      ]);
+      if (!row) return reply.code(404).send({ error: "Не найдено" });
+      return row;
+    });
+
     // ----- Templates & broadcasts -----
     api.get("/api/templates", async (_req, reply) => {
       try {
@@ -503,7 +587,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       }
       try {
         const kb = await getKnowledge();
-        const media = (await listMedia(true)).map((m) => ({ id: m.id, title: m.title, description: m.description, kind: m.kind }));
+        const { catalog, media } = await aiSalesContext();
         const r = await generateReply(
           s,
           kb,
@@ -511,6 +595,7 @@ export async function buildServer(): Promise<FastifyInstance> {
           b.messages.map((m) => ({ sender: m.from === "client" ? "contact" : "ai", text: m.text })),
           [],
           media,
+          { catalog },
         );
         const cost = costUsd(r.model, r.usage);
         await recordUsage({
@@ -524,7 +609,16 @@ export async function buildServer(): Promise<FastifyInstance> {
           cost_usd: cost,
         });
         const files = r.mediaIds.map((id) => media.find((m) => m.id === id)?.title ?? `#${id}`);
-        return { reply: r.reply, files, handoff: r.handoff, handoff_reason: r.handoffReason, cost_usd: cost, model: r.model };
+        return {
+          reply: r.reply,
+          files,
+          order: r.order,
+          payment_claimed: r.paymentClaimed,
+          handoff: r.handoff,
+          handoff_reason: r.handoffReason,
+          cost_usd: cost,
+          model: r.model,
+        };
       } catch (e) {
         return reply.code(400).send({ error: e instanceof AiError ? e.message : (e as Error).message });
       }

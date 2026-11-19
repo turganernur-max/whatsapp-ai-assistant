@@ -142,3 +142,10 @@ textarea.short { min-height: 60px; }
 
 .fu-row { display: flex; align-items: center; gap: 8px; width: 100%; font-size: 14px; }
 .fu-row select { flex: 1; }
+
+.tabbar a span:last-child { font-size: 10px; }
+.menu-link { display: flex; justify-content: space-between; text-decoration: none; color: var(--text); font-weight: 600; }
+.order .o-items { margin: 6px 0; white-space: pre-wrap; }
+.order .o-actions { margin-top: 8px; }
+.order .o-actions .btn { padding: 7px 10px; font-size: 13px; }
+.order .o-actions select { width: auto; flex: 1; min-width: 120px; }

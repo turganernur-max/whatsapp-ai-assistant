@@ -171,6 +171,35 @@ const MIGRATIONS: string[] = [
   `ALTER TABLE contacts ADD COLUMN IF NOT EXISTS followup_mode TEXT NOT NULL DEFAULT 'default';
    ALTER TABLE contacts ADD COLUMN IF NOT EXISTS followup_count INTEGER NOT NULL DEFAULT 0;
    UPDATE contacts SET followup_count = 1 WHERE followup_sent_at IS NOT NULL AND followup_sent_at > last_inbound_at;`,
+  `CREATE TABLE IF NOT EXISTS catalog (
+     id SERIAL PRIMARY KEY,
+     kind TEXT NOT NULL DEFAULT 'product',        -- product | service
+     name TEXT NOT NULL,
+     category TEXT NOT NULL DEFAULT '',
+     price DOUBLE PRECISION NOT NULL DEFAULT 0,
+     price_note TEXT NOT NULL DEFAULT '',          -- e.g. "от", "за 60 мин"
+     description TEXT NOT NULL DEFAULT '',
+     in_stock BOOLEAN NOT NULL DEFAULT TRUE,
+     media_id INTEGER REFERENCES media(id) ON DELETE SET NULL,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+   );
+   CREATE TABLE IF NOT EXISTS orders (
+     id SERIAL PRIMARY KEY,
+     wa_id TEXT NOT NULL REFERENCES contacts(wa_id) ON DELETE CASCADE,
+     status TEXT NOT NULL DEFAULT 'new',           -- new | contacted | payment_check | paid | shipped | done | cancelled
+     items TEXT NOT NULL DEFAULT '',
+     total DOUBLE PRECISION NOT NULL DEFAULT 0,
+     customer_name TEXT NOT NULL DEFAULT '',
+     city TEXT NOT NULL DEFAULT '',
+     address TEXT NOT NULL DEFAULT '',
+     delivery TEXT NOT NULL DEFAULT '',
+     comment TEXT NOT NULL DEFAULT '',
+     owner_note TEXT NOT NULL DEFAULT '',
+     payment_claimed_at TIMESTAMPTZ,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+   );
+   CREATE INDEX IF NOT EXISTS orders_status_idx ON orders (status, id);`,
 ];
 
 async function migrate(d: Db) {

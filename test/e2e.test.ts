@@ -152,7 +152,7 @@ beforeEach(async () => {
   failSends = false;
   nextReply = { reply: "Здравствуйте! Стрижка стоит 5000 ₸.", handoff: false, handoff_reason: "" };
   const d = getDb();
-  await d.exec(`DELETE FROM messages; DELETE FROM contacts; DELETE FROM usage; DELETE FROM events; DELETE FROM settings; DELETE FROM knowledge; DELETE FROM media; DELETE FROM broadcasts;`);
+  await d.exec(`DELETE FROM messages; DELETE FROM contacts; DELETE FROM usage; DELETE FROM events; DELETE FROM settings; DELETE FROM knowledge; DELETE FROM orders; DELETE FROM catalog; DELETE FROM media; DELETE FROM broadcasts;`);
   clearSettingsCache();
   await updateSettings({ ai_enabled: true, human_style: false });
 });
@@ -667,4 +667,73 @@ test("human style: no robotic self-intro rule, honest if asked, reply split into
   await postWebhook(inbound("77010000061", "Сәлем"));
   await drain();
   assert.doesNotMatch(claudeCalls.at(-1).system[0].text, /КАК ЖИВОЙ МЕНЕДЖЕР/);
+});
+
+test("sales: catalog in the prompt, product photo sent, confirmed order saved once, payment claim → check", async () => {
+  const h = await login();
+  await updateSettings({ payment_instructions: "Kaspi: +7 700 000 00 00 (Ернұр Т.)", delivery_info: "Барлық қалаға: 1500 ₸, 2–4 күн" });
+  const photo = await app.inject({ method: "POST", url: "/api/media", headers: h, payload: { title: "Крем фото", filename: "c.png", mime: "image/png", data: PNG_B64 } });
+  const photoId = photo.json().id;
+  await app.inject({ method: "PUT", url: `/api/media/${photoId}`, headers: h, payload: { enabled: false } }); // only via catalog
+  const c1 = await app.inject({ method: "POST", url: "/api/catalog", headers: h, payload: { name: "Крем 50 мл", category: "Күтім", price: 19500, description: "Ылғалдандырады", media_id: photoId } });
+  assert.equal(c1.statusCode, 200, c1.body);
+  await app.inject({ method: "POST", url: "/api/catalog", headers: h, payload: { kind: "service", name: "Массаж", price: 8000, price_note: "60 мин", in_stock: false } });
+
+  nextReply = { reply: "Бізде Крем 50 мл бар — 19 500 ₸ 👇", handoff: false, handoff_reason: "", send_media: [photoId],
+    order: { confirmed: false, items: "", total: 0, customer_name: "", city: "", address: "", delivery: "", comment: "" }, payment_claimed: false };
+  await postWebhook(inbound("77010000070", "Бет кремі бар ма?"));
+  await drain();
+  const sys = claudeCalls.at(-1).system[0].text as string;
+  assert.match(sys, /КАТАЛОГ/);
+  assert.match(sys, /Крем 50 мл \(Күтім\) — 19\s?500 ₸ — фото: ID \d+/);
+  assert.match(sys, /Массаж — 60 мин 8\s?000 ₸ — НЕТ В НАЛИЧИИ/);
+  assert.match(sys, /ОПЛАТА\nKaspi: \+7 700/);
+  assert.match(sys, /ПРОДАЖИ/);
+  assert.equal(sent.at(-1).type, "image", "catalog photo sent even though hidden in the library");
+  assert.equal((await getDb().query(`SELECT * FROM orders`)).length, 0, "no order before confirmation");
+
+  const order = { confirmed: true, items: "Крем 50 мл ×2", total: 39000, customer_name: "Айгерим", city: "Алматы", address: "Абай 10", delivery: "курьер", comment: "" };
+  nextReply = { reply: "Рахмет! Тапсырыс қабылданды. Kaspi: +7 700 000 00 00", handoff: false, handoff_reason: "", send_media: [], order, payment_claimed: false };
+  await postWebhook(inbound("77010000070", "Иә, растаймын"));
+  await drain();
+  nextReply = { ...nextReply, order: { ...order, items: "Крем 50 мл ×3", total: 58500 } };
+  await postWebhook(inbound("77010000070", "Жоқ, 3 дана болсын"));
+  await drain();
+  const orders = await getDb().query(`SELECT * FROM orders`);
+  assert.equal(orders.length, 1, "same open order updated, not duplicated");
+  assert.equal(orders[0].items, "Крем 50 мл ×3");
+  assert.equal(orders[0].total, 58500);
+  assert.equal(orders[0].city, "Алматы");
+
+  nextReply = { reply: "Рахмет, тексеруге жібердім 🙏", handoff: false, handoff_reason: "", send_media: [], order: { ...order, confirmed: false }, payment_claimed: true };
+  await postWebhook(inbound("77010000070", "Төледім"));
+  await drain();
+  const [o2] = await getDb().query(`SELECT status, payment_claimed_at FROM orders`);
+  assert.equal(o2.status, "payment_check");
+  assert.ok(o2.payment_claimed_at);
+
+  const list = await app.inject({ url: "/api/orders?status=open", headers: h });
+  assert.equal(list.json().items.length, 1);
+  assert.equal(list.json().summary.payment_check, 1);
+  const id = list.json().items[0].id;
+  const paid = await app.inject({ method: "PATCH", url: `/api/orders/${id}`, headers: h, payload: { status: "paid" } });
+  assert.equal(paid.statusCode, 200);
+  const after = (await app.inject({ url: "/api/orders?status=", headers: h })).json();
+  assert.equal(after.summary.month_revenue, 58500);
+  assert.equal(after.summary.open, 0);
+  const bad = await app.inject({ method: "PATCH", url: `/api/orders/${id}`, headers: h, payload: { status: "stolen" } });
+  assert.equal(bad.statusCode, 400);
+  const ov = (await app.inject({ url: "/api/overview", headers: h })).json();
+  assert.equal(ov.orders_attention, 0);
+});
+
+test("sales mode off removes sales rules; unconfirmed orders are ignored", async () => {
+  await updateSettings({ sales_mode: false });
+  nextReply = { reply: "Сәлем!", handoff: false, handoff_reason: "", send_media: [],
+    order: { confirmed: false, items: "Крем", total: 100, customer_name: "", city: "", address: "", delivery: "", comment: "" }, payment_claimed: false };
+  await postWebhook(inbound("77010000071", "Сәлем"));
+  await drain();
+  assert.doesNotMatch(claudeCalls.at(-1).system[0].text, /ПРОДАЖИ \(ты ещё и продавец\)/);
+  assert.equal((await getDb().query(`SELECT * FROM orders`)).length, 0);
+  await updateSettings({ sales_mode: true });
 });

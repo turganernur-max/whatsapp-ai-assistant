@@ -6,7 +6,8 @@ import { getSettings } from "./settings.js";
 import { estimateAudioSeconds, transcribe } from "./stt.js";
 import { notifyOwner } from "./notify.js";
 import * as wa from "./whatsapp.js";
-import { listMedia, mediaLabel, sendLibraryItem, sendOneOffFile } from "./media.js";
+import { mediaLabel, sendLibraryItem, sendOneOffFile } from "./media.js";
+import { aiSalesContext, paymentClaimed, saveOrder } from "./sales.js";
 import {
   getContact,
   getKnowledge,
@@ -312,8 +313,8 @@ export async function processContact(waId: string): Promise<void> {
 
   let decision;
   try {
-    const media = (await listMedia(true)).map((m) => ({ id: m.id, title: m.title, description: m.description, kind: m.kind }));
-    decision = await generateReply(s, kb, learned, history, images, media);
+    const { catalog, media } = await aiSalesContext();
+    decision = await generateReply(s, kb, learned, history, images, media, { catalog });
   } catch (e) {
     const err = e as AiError;
     const n = (retries.get(waId) ?? 0) + 1;
@@ -370,6 +371,22 @@ export async function processContact(waId: string): Promise<void> {
     await release(ids, "processed", `Ошибка отправки: ${(e as Error).message}`);
     await flagAttention(waId, `Не удалось отправить ответ: ${(e as Error).message}`, "error");
     return;
+  }
+
+  // Sales: a confirmed order becomes an order card; "I paid" moves it to payment check.
+  if (decision.order) {
+    try {
+      await saveOrder(waId, decision.order);
+    } catch (e) {
+      console.error("[order]", (e as Error).message);
+    }
+  }
+  if (decision.paymentClaimed) {
+    try {
+      await paymentClaimed(waId);
+    } catch (e) {
+      console.error("[payment]", (e as Error).message);
+    }
   }
 
   for (const mediaId of decision.mediaIds) {
