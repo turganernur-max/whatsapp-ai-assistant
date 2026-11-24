@@ -44,6 +44,10 @@ export const config = {
   waAppSecret: env("META_APP_SECRET").trim(),
   waVerifyToken: env("WEBHOOK_VERIFY_TOKEN"),
   graphVersion: env("GRAPH_API_VERSION", "v25.0"),
+  // Embedded Signup (connect the owner's own WhatsApp Business app number)
+  metaAppId: env("META_APP_ID").trim(),
+  esConfigId: env("META_ES_CONFIG_ID").trim(),
+  esSessionInfoVersion: env("META_ES_SESSION_INFO_VERSION", "4"),
   graphBase: env("GRAPH_API_BASE", "https://graph.facebook.com"),
 
   // Claude

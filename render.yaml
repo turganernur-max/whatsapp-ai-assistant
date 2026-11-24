@@ -38,3 +38,7 @@ services:
         sync: false
       - key: NTFY_TOPIC
         sync: false
+      - key: META_APP_ID
+        sync: false
+      - key: META_ES_CONFIG_ID
+        sync: false

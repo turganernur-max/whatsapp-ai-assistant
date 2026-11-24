@@ -12,6 +12,7 @@ import * as wa from "./whatsapp.js";
 import { handleEvents, ownerSend, ownerSendFile, schedule } from "./processor.js";
 import { addMedia, getMediaFile, listMedia, MediaError, MAX_RAW_UPLOAD } from "./media.js";
 import { aiSalesContext, ORDER_STATUSES } from "./sales.js";
+import { completeSignup, connectionInfo, disconnectOwnNumber, signupConfig, SignupError } from "./signup.js";
 import { audience, BroadcastError, cancelBroadcast, createBroadcast, runBroadcasts } from "./campaigns.js";
 import { generateReply, AiError } from "./ai.js";
 import { costUsd } from "./pricing.js";
@@ -68,7 +69,10 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (!req.url.startsWith("/webhook")) {
       reply.header(
         "Content-Security-Policy",
-        "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+        "default-src 'self'; img-src 'self' data: blob: https://*.facebook.com https://*.fbcdn.net; media-src 'self' blob:; " +
+          "style-src 'self' 'unsafe-inline'; script-src 'self' https://connect.facebook.net; " +
+          "connect-src 'self' https://*.facebook.com https://*.facebook.net; " +
+          "frame-src https://*.facebook.com https://*.facebook.net; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
       );
     }
     if (req.url.startsWith("/api/")) reply.header("Cache-Control", "no-store");
@@ -698,6 +702,8 @@ export async function buildServer(): Promise<FastifyInstance> {
         waba_id: config.waBusinessAccountId || null,
         graph_version: config.graphVersion,
         webhook: { ...webhookStats, since: startedAt },
+        connection: connectionInfo(),
+        signup: signupConfig(),
       };
       if (config.waToken && config.waPhoneNumberId) {
         try {
@@ -715,6 +721,28 @@ export async function buildServer(): Promise<FastifyInstance> {
         }
       }
       return out;
+    });
+
+    // ----- Connect my own WhatsApp Business app number (Embedded Signup, coexistence) -----
+    api.post("/api/whatsapp/signup", async (req, reply) => {
+      const b = z
+        .object({
+          code: z.string().min(10).max(2000),
+          phone_number_id: z.string().regex(/^\d+$/).optional(),
+          waba_id: z.string().regex(/^\d+$/).optional(),
+        })
+        .parse(req.body);
+      try {
+        const r = await completeSignup({ code: b.code, phoneNumberId: b.phone_number_id, wabaId: b.waba_id });
+        req.log.info({ phone: r.phone }, "own WhatsApp number connected");
+        return { ok: true, ...r };
+      } catch (e) {
+        return reply.code(400).send({ error: e instanceof SignupError ? e.message : (e as Error).message });
+      }
+    });
+    api.post("/api/whatsapp/disconnect-own", async () => {
+      await disconnectOwnNumber();
+      return { ok: true };
     });
 
     api.post("/api/whatsapp/subscribe", async (_req, reply) => {

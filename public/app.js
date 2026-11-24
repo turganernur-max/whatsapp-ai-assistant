@@ -1135,13 +1135,113 @@
     });
   }
 
+  // ---------------- Embedded Signup (own number, coexistence) ----------------
+  function loadFacebookSdk(appId, version) {
+    if (window.FB) return Promise.resolve(window.FB);
+    return new Promise((resolve, reject) => {
+      window.fbAsyncInit = () => {
+        window.FB.init({ appId, autoLogAppEvents: true, xfbml: false, version });
+        resolve(window.FB);
+      };
+      const sc = document.createElement("script");
+      sc.src = "https://connect.facebook.net/en_US/sdk.js";
+      sc.async = true;
+      sc.crossOrigin = "anonymous";
+      sc.onerror = () => reject(new Error("Не удалось загрузить окно Meta. Проверьте интернет и попробуйте снова."));
+      document.body.appendChild(sc);
+    });
+  }
+
+  // Must run synchronously inside the tap, otherwise Safari blocks the Meta popup.
+  function startEmbeddedSignup(su) {
+    const status = (t) => ($("#own-status") ? ($("#own-status").textContent = t) : null);
+    const FB = window.FB;
+    if (!FB) {
+      status("Окно Meta ещё загружается — нажмите кнопку ещё раз через пару секунд.");
+      loadFacebookSdk(su.app_id, su.graph_version).catch((err) => status(err.message));
+      return;
+    }
+    status("Открываю окно Meta…");
+    let ids = {};
+    let code = null;
+    let finished = false;
+    const onMessage = (event) => {
+      if (!/(^|\.)facebook\.com$/.test(new URL(event.origin).hostname)) return;
+      let data;
+      try {
+        data = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+      } catch {
+        return;
+      }
+      if (!data || data.type !== "WA_EMBEDDED_SIGNUP") return;
+      const ev = String(data.event || "");
+      const d = data.data || {};
+      if (ev.startsWith("FINISH")) {
+        ids = { phone_number_id: d.phone_number_id ? String(d.phone_number_id) : undefined, waba_id: d.waba_id ? String(d.waba_id) : undefined };
+        status("Meta подтвердила номер…");
+      } else if (ev === "CANCEL") {
+        status(d.current_step ? `Окно закрыто на шаге: ${d.current_step}` : "Окно закрыто");
+      } else if (ev === "ERROR") {
+        status("Ошибка Meta: " + (d.error_message || "неизвестно"));
+      }
+    };
+    window.addEventListener("message", onMessage);
+    const send = async () => {
+      if (finished || !code) return;
+      finished = true;
+      window.removeEventListener("message", onMessage);
+      status("Подключаю номер к серверу…");
+      try {
+        const r = await api("POST", "/api/whatsapp/signup", { code, ...ids });
+        toast("Номер подключён: " + (r.phone || "") + " ✓");
+        renderWhatsapp();
+      } catch (err) {
+        status("");
+        toast(err.message, true);
+      }
+    };
+    FB.login(
+      (response) => {
+        if (response && response.authResponse && response.authResponse.code) {
+          code = response.authResponse.code;
+          // give the FINISH message a moment to arrive (it carries the number id)
+          setTimeout(send, 1500);
+        } else {
+          window.removeEventListener("message", onMessage);
+          status("Подключение не завершено. Можно попробовать ещё раз.");
+        }
+      },
+      {
+        config_id: su.config_id,
+        response_type: "code",
+        override_default_response_type: true,
+        extras: { setup: {}, featureType: "whatsapp_business_app_onboarding", sessionInfoVersion: su.session_info_version },
+      },
+    );
+  }
+
   async function renderWhatsapp() {
     title("Подключение WhatsApp");
     const st = await api("GET", "/api/whatsapp/status");
     const i = st.integrations;
     const ok = (v) => (v ? "✅" : "❌");
     const p = st.phone || {};
+    const su = st.signup || {};
+    const conn = st.connection || {};
     view.innerHTML = `
+      <div class="card">
+        <h3>📲 Мой номер WhatsApp Business</h3>
+        ${
+          conn.source === "own"
+            ? `<div class="banner ok">Подключён ваш номер <b>${esc(conn.phone || "")}</b>${conn.name ? " (" + esc(conn.name) + ")" : ""}. Приложение WhatsApp Business на телефоне продолжает работать.</div>
+               <button class="btn danger wide" id="own-disconnect">Вернуться на тестовый номер</button>`
+            : su.ready
+              ? `<p class="small">Подключите номер, который уже работает в приложении <b>WhatsApp Business</b> на вашем телефоне. Приложение продолжит работать, а AI будет отвечать клиентам. Понадобится телефон с этим номером — нужно будет отсканировать QR-код в приложении.</p>
+                 <button class="btn primary wide" id="own-connect">Подключить мой номер</button>
+                 <p class="muted small" id="own-status"></p>`
+              : `<div class="banner warn small">Чтобы подключить свой номер, добавьте в Render переменные: <b>${esc((su.missing || []).join(", "))}</b> (инструкция в docs/SETUP_RU.md, раздел «Свой номер»).</div>`
+        }
+      </div>
       <div class="card">
         <h3>Состояние</h3>
         <div class="status-row"><span>Токен WhatsApp и ID номера</span><span>${ok(i.whatsapp)}</span></div>
@@ -1187,6 +1287,27 @@
         <input type="tel" id="test-to" placeholder="77011234567">
         <button class="btn primary wide" id="test-send">Отправить тестовое сообщение</button>
       </div>`;
+    if ($("#own-disconnect"))
+      $("#own-disconnect").addEventListener("click", async () => {
+        if (!confirm("Отключить ваш номер от AI и вернуться на номер из настроек Render? Приложение WhatsApp Business на телефоне продолжит работать.")) return;
+        try {
+          await api("POST", "/api/whatsapp/disconnect-own");
+          toast("Готово");
+          renderWhatsapp();
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+    if ($("#own-connect")) {
+      loadFacebookSdk(su.app_id, su.graph_version).catch((err) => ($("#own-status").textContent = err.message));
+      $("#own-connect").addEventListener("click", () => {
+        try {
+          startEmbeddedSignup(su);
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+    }
     $("#subscribe").addEventListener("click", async () => {
       try {
         await api("POST", "/api/whatsapp/subscribe");

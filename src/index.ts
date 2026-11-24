@@ -5,6 +5,7 @@ import { cleanupOldData, recover, startProcessor, stopProcessor } from "./proces
 import { startCampaigns, stopCampaigns } from "./campaigns.js";
 import { getPhoneInfo, waHealth } from "./whatsapp.js";
 import { notifyOwner } from "./notify.js";
+import { loadConnection } from "./signup.js";
 
 /** Checks the WhatsApp token every 30 min and alerts the owner once when it stops working. */
 function startHealthWatch() {
@@ -43,6 +44,7 @@ async function main() {
     process.exit(1);
   }
   await initDb();
+  await loadConnection();
   startProcessor();
   const app = await buildServer();
   await app.listen({ port: config.port, host: "0.0.0.0" });

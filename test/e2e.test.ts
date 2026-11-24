@@ -24,12 +24,44 @@ const TEMPLATES = [
 ];
 let failSends = false;
 let authFail = false;
+const ownSent: any[] = [];
+const unexpectedGraph: string[] = [];
 const graph = http.createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
   req.on("end", () => {
-    assert.equal(req.headers.authorization, "Bearer EAATESTFAKE00000000000000000");
     res.setHeader("Content-Type", "application/json");
+    const u = new URL(req.url ?? "/", "http://x");
+    // ---- Embedded Signup endpoints ----
+    if (u.pathname.endsWith("/oauth/access_token")) {
+      if (u.searchParams.get("code") !== "GOODCODE1234" || u.searchParams.get("client_secret") !== "APPSECRET") {
+        res.statusCode = 400;
+        return res.end(JSON.stringify({ error: { message: "Invalid verification code format." } }));
+      }
+      return res.end(JSON.stringify({ access_token: "EAABUSINESSTOKEN000000000000", token_type: "bearer" }));
+    }
+    if (u.pathname.endsWith("/debug_token")) {
+      assert.equal(req.headers.authorization, "Bearer 1176|APPSECRET");
+      return res.end(JSON.stringify({ data: { granular_scopes: [{ scope: "whatsapp_business_management", target_ids: ["OWNWABA"] }] } }));
+    }
+    if (req.headers.authorization === "Bearer EAABUSINESSTOKEN000000000000") {
+      if (u.pathname.endsWith("/OWNWABA/phone_numbers"))
+        return res.end(JSON.stringify({ data: [{ id: "OWNPN", display_phone_number: "+7 707 959 56 80", verified_name: "Жан мен Тән" }] }));
+      if (u.pathname.endsWith("/OWNWABA/subscribed_apps"))
+        return res.end(req.method === "POST" ? '{"success":true}' : JSON.stringify({ data: [{ whatsapp_business_api_data: { id: "1176" } }] }));
+      if (req.method === "POST" && u.pathname.endsWith("/OWNPN/messages")) {
+        const ob = JSON.parse(body);
+        if (ob.status === "read") return res.end('{"success":true}');
+        ownSent.push(ob);
+        return res.end(JSON.stringify({ messages: [{ id: "wamid.OWN" + ownSent.length }] }));
+      }
+      if (u.pathname.endsWith("/OWNPN")) return res.end(JSON.stringify({ display_phone_number: "+7 707 959 56 80", verified_name: "Жан мен Тән" }));
+    }
+    if (req.headers.authorization !== "Bearer EAATESTFAKE00000000000000000") {
+      unexpectedGraph.push(`${req.method} ${u.pathname} (${String(req.headers.authorization).slice(0, 20)})`);
+      res.statusCode = 401;
+      return res.end(JSON.stringify({ error: { message: "unexpected token in test", code: 190 } }));
+    }
     if (req.method === "POST" && req.url?.endsWith("/PN1/media")) {
       assert.match(String(req.headers["content-type"]), /multipart\/form-data/);
       uploads.push(body.length > 0 ? "ok" : "empty");
@@ -138,9 +170,12 @@ before(async () => {
     debounceMs: 30,
     humanDelayScale: 0,
     ntfyTopic: "",
+    metaAppId: "1176",
+    esConfigId: "CFG1",
   });
   await initDb(process.env.TEST_DATABASE_URL ? { url: process.env.TEST_DATABASE_URL } : { dir: "memory" });
   startProcessor();
+  (await import("../src/signup.js")).rememberEnvCredentials();
   app = await buildServer();
 });
 
@@ -793,4 +828,64 @@ test("persistent reminders still run in a chat that is waiting for the owner", a
   await getDb().query(`UPDATE messages SET created_at = now() - interval '2 hours' WHERE wa_id = '77010000092' AND sender = 'ai'`);
   nextReply = { reply: "Сұрағыңыз бойынша көмектесейін бе?", handoff: false, handoff_reason: "", send_media: [] };
   assert.equal(await runFollowups(), 1);
+});
+
+
+test("connect my own number (Embedded Signup): code → token → number → webhooks → AI answers from the own number", async () => {
+  const h = await login();
+  const st0 = (await app.inject({ url: "/api/whatsapp/status", headers: h })).json();
+  assert.equal(st0.signup.ready, true);
+  assert.equal(st0.signup.config_id, "CFG1");
+  assert.equal(st0.connection.source, "env");
+
+  const bad = await app.inject({ method: "POST", url: "/api/whatsapp/signup", headers: h, payload: { code: "WRONGCODE123" } });
+  assert.equal(bad.statusCode, 400);
+  assert.equal(config.waPhoneNumberId, "PN1", "nothing changed after a failed attempt");
+
+  // the FINISH message may not arrive on iPhone: ids are discovered from the token
+  const ok = await app.inject({ method: "POST", url: "/api/whatsapp/signup", headers: h, payload: { code: "GOODCODE1234" } });
+  assert.equal(ok.statusCode, 200, ok.body);
+  assert.equal(ok.json().phone, "+7 707 959 56 80");
+  assert.equal(config.waPhoneNumberId, "OWNPN");
+  assert.equal(config.waBusinessAccountId, "OWNWABA");
+  const stored = await getDb().query(`SELECT value FROM settings WHERE key = '_wa_connection'`);
+  assert.ok(!JSON.stringify(stored).includes("EAABUSINESSTOKEN"), "token stored encrypted");
+
+  // incoming message for the own number is answered from the own number
+  const msg = inbound("77010000099", "Сәлем");
+  msg.entry[0].changes[0].value.metadata.phone_number_id = "OWNPN";
+  await postWebhook(msg);
+  await drain();
+  assert.equal(ownSent.length, 1);
+  // test-number events are now ignored
+  await postWebhook(inbound("77010000098", "тест нөмірі"));
+  await drain();
+  assert.equal((await getDb().query(`SELECT * FROM contacts WHERE wa_id = '77010000098'`)).length, 0);
+
+  // survives a restart
+  const { loadConnection } = await import("../src/signup.js");
+  Object.assign(config, { waPhoneNumberId: "PN1", waToken: "EAATESTFAKE00000000000000000", waBusinessAccountId: "WABA1" });
+  await loadConnection();
+  assert.equal(config.waPhoneNumberId, "OWNPN");
+
+  const st1 = (await app.inject({ url: "/api/whatsapp/status", headers: h })).json();
+  assert.equal(st1.connection.source, "own");
+  assert.equal(st1.connection.phone, "+7 707 959 56 80");
+
+  // switch back to the test number
+  const off = await app.inject({ method: "POST", url: "/api/whatsapp/disconnect-own", headers: h });
+  assert.equal(off.statusCode, 200);
+  assert.equal(config.waPhoneNumberId, "PN1");
+  assert.equal(config.waToken, "EAATESTFAKE00000000000000000");
+});
+
+test("panel CSP allows the Meta signup popup and nothing else external", async () => {
+  const r = await app.inject({ url: "/" });
+  const csp = String(r.headers["content-security-policy"]);
+  assert.match(csp, /script-src 'self' https:\/\/connect\.facebook\.net;/);
+  assert.match(csp, /frame-ancestors 'none'/);
+});
+
+test("no Graph calls were made with an unexpected token", () => {
+  assert.deepEqual(unexpectedGraph, []);
 });
