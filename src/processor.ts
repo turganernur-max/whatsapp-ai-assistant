@@ -189,7 +189,12 @@ export function startProcessor() {
 /** After a crash/restart: retry unfinished work from the last 24h, skip anything older. */
 export async function recover() {
   const d = getDb();
-  await d.query(`UPDATE messages SET status = 'pending' WHERE direction = 'in' AND status = 'processing'`);
+  // Only take over work that has been stuck for a while: during a deploy the previous server
+  // instance may still be finishing a reply, and resetting it would make the client get two answers.
+  await d.query(
+    `UPDATE messages SET status = 'pending'
+     WHERE direction = 'in' AND status = 'processing' AND (claimed_at IS NULL OR claimed_at < now() - interval '5 minutes')`,
+  );
   await d.query(
     `UPDATE messages SET status = 'skipped', error = 'Устарело (сервер был недоступен более 24 часов)'
      WHERE direction = 'in' AND status = 'pending' AND created_at < now() - interval '23 hours'`,
@@ -222,7 +227,7 @@ async function flagAttention(waId: string, reason: string, kind: string, notify 
 export async function processContact(waId: string): Promise<void> {
   const d = getDb();
   const claimed = await d.query<Message>(
-    `UPDATE messages SET status = 'processing'
+    `UPDATE messages SET status = 'processing', claimed_at = now()
      WHERE wa_id = $1 AND direction = 'in' AND status = 'pending' RETURNING *`,
     [waId],
   );

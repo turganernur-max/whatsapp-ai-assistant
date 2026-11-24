@@ -53,6 +53,8 @@ async function main() {
   startHealthWatch();
   const n = await recover();
   if (n) console.log(`Recovered pending work for ${n} contact(s)`);
+  // Pick up anything a previous instance left half-done once it has surely stopped.
+  setTimeout(() => void recover().catch(() => {}), 6 * 60_000).unref();
 
   const housekeeping = setInterval(() => {
     cleanupOldData().catch((e) => console.error("[cleanup]", e.message));

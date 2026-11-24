@@ -47,6 +47,9 @@ export async function dueFollowups(hours: number, globalOn: boolean, max: number
        AND (c.paused_until IS NULL OR c.paused_until < now())
        AND c.last_inbound_at > now() - interval '23 hours'
        AND last.sender = 'ai'
+       AND last.created_at < now() - interval '30 minutes'
+       AND (c.followup_sent_at IS NULL OR c.followup_sent_at < now() - (GREATEST($1::float8, 0.5) * interval '1 hour')
+            OR (c.mode = 'persistent' AND c.last_inbound_at < now() - interval '21 hours' AND c.followup_sent_at < now() - interval '1 hour'))
        AND (
          (c.mode = 'default' AND $2::boolean AND c.followup_count < 1
             AND last.created_at < now() - ($1::float8 * interval '1 hour'))
@@ -79,7 +82,14 @@ export async function runFollowups(): Promise<number> {
       const waId = f.wa_id;
       const attempt = f.followup_count + 1;
       // Count first so a crash or error never causes an extra reminder.
-      await getDb().query(`UPDATE contacts SET followup_count = followup_count + 1, followup_sent_at = now() WHERE wa_id = $1`, [waId]);
+      // Atomic claim: if another server instance (e.g. during a deploy) already took it, skip.
+      const claimed = await getDb().query(
+        `UPDATE contacts SET followup_count = followup_count + 1, followup_sent_at = now()
+         WHERE wa_id = $1 AND followup_count = $2
+           AND (followup_sent_at IS NULL OR followup_sent_at < now() - interval '20 minutes') RETURNING wa_id`,
+        [waId, f.followup_count],
+      );
+      if (!claimed.length) continue;
       try {
         const hist = await getDb().query<{ sender: HistoryItem["sender"]; text: string | null; type: string }>(
           `SELECT sender, text, type FROM (SELECT id, sender, text, type FROM messages WHERE wa_id = $1
@@ -205,6 +215,11 @@ export async function runBroadcasts(maxPerRun = 200): Promise<number> {
     for (const r of pending) {
       const [{ status }] = await d.query<{ status: string }>(`SELECT status FROM broadcasts WHERE id = $1`, [b.id]);
       if (status === "cancelled") break;
+      const mine = await d.query(
+        `UPDATE broadcast_recipients SET status = 'sending' WHERE broadcast_id = $1 AND wa_id = $2 AND status = 'pending' RETURNING wa_id`,
+        [b.id, r.wa_id],
+      );
+      if (!mine.length) continue; // another instance is sending this one
       if (r.opted_out) {
         await d.query(`UPDATE broadcast_recipients SET status = 'skipped', error = 'отписался' WHERE broadcast_id = $1 AND wa_id = $2`, [b.id, r.wa_id]);
         continue;
@@ -277,7 +292,8 @@ export async function runInterviewReminders(): Promise<number> {
     );
     const tz = s.timezone || "Asia/Almaty";
     for (const o of due) {
-      await d.query(`UPDATE orders SET reminder_sent_at = now() WHERE id = $1`, [o.id]);
+      const claimed = await d.query(`UPDATE orders SET reminder_sent_at = now() WHERE id = $1 AND reminder_sent_at IS NULL RETURNING id`, [o.id]);
+      if (!claimed.length) continue;
       if (o.opted_out) continue;
       // Booked inside the reminder window (e.g. 2 hours before) — no reminder needed.
       if (new Date(o.created_at).getTime() > new Date(o.interview_at).getTime() - s.interview_reminder_hours * 3600_000) continue;

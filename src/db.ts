@@ -210,6 +210,11 @@ const MIGRATIONS: string[] = [
   `ALTER TABLE orders ADD COLUMN IF NOT EXISTS interview_at TIMESTAMPTZ;
    ALTER TABLE orders ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ;
    ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ;`,
+  `UPDATE settings SET value = to_jsonb('Рахмет! Сұрағыңызды иесіне жеткіздім, жақын арада өзі жауап береді.' || chr(10) ||
+     'Спасибо! Я передал ваш вопрос владельцу, он ответит вам лично в ближайшее время.'::text), updated_at = now()
+   WHERE key = 'handoff_message'
+     AND value = to_jsonb('Спасибо! Я передал ваш вопрос владельцу, он ответит вам лично в ближайшее время.'::text);`,
+  `ALTER TABLE messages ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;`,
 ];
 
 async function migrate(d: Db) {

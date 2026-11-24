@@ -403,7 +403,10 @@ test("panel is served with security headers", async () => {
 test("crash recovery: unfinished messages are answered after restart, stale ones skipped", async () => {
   const d = getDb();
   await d.query(`INSERT INTO contacts (wa_id, name, last_inbound_at) VALUES ('77010000012', 'R', now())`);
-  await d.query(`INSERT INTO messages (wa_message_id, wa_id, direction, sender, text, status) VALUES ('wamid.R1', '77010000012', 'in', 'contact', 'Ау', 'processing')`);
+  await d.query(`INSERT INTO messages (wa_message_id, wa_id, direction, sender, text, status, claimed_at) VALUES ('wamid.R1', '77010000012', 'in', 'contact', 'Ау', 'processing', now() - interval '10 minutes')`);
+  // work claimed seconds ago by another (still running) instance must not be taken over
+  await d.query(`INSERT INTO contacts (wa_id, name, last_inbound_at) VALUES ('77010000014b', 'Busy', now())`);
+  await d.query(`INSERT INTO messages (wa_message_id, wa_id, direction, sender, text, status, claimed_at) VALUES ('wamid.R3', '77010000014b', 'in', 'contact', 'Сәлем', 'processing', now())`);
   await d.query(`INSERT INTO contacts (wa_id, name) VALUES ('77010000013', 'Old')`);
   await d.query(`INSERT INTO messages (wa_message_id, wa_id, direction, sender, text, status, created_at) VALUES ('wamid.R2', '77010000013', 'in', 'contact', 'Старое', 'pending', now() - interval '2 days')`);
   const n = await recover();
@@ -668,7 +671,10 @@ test("persistent reminders per client: repeat until reply, last one before the 2
   const r = await app.inject({ method: "PATCH", url: "/api/contacts/77010000050", headers: h, payload: { followup_mode: "persistent" } });
   assert.equal(r.statusCode, 200);
   const age = (sql: string) => getDb().query(sql);
-  const aiAgo = (hrs: number) => age(`UPDATE messages SET created_at = now() - interval '${hrs} hours' WHERE wa_id = '77010000050' AND sender = 'ai'`);
+  const aiAgo = async (hrs: number) => {
+    await age(`UPDATE messages SET created_at = now() - interval '${hrs} hours' WHERE wa_id = '77010000050' AND sender = 'ai'`);
+    await age(`UPDATE contacts SET followup_sent_at = now() - interval '${hrs} hours' WHERE wa_id = '77010000050' AND followup_sent_at IS NOT NULL`);
+  };
   const clientAgo = (hrs: number) => age(`UPDATE contacts SET last_inbound_at = now() - interval '${hrs} hours' WHERE wa_id = '77010000050'`);
 
   nextReply = { reply: "Еске салайын 🙂", handoff: false, handoff_reason: "", send_media: [] };
@@ -948,12 +954,15 @@ test("'persistent for everyone' reminds chats left on the default mode", async (
   await postWebhook(inbound("77010000110", "Ертең сағат нешеде барайын"));
   await drain();
   await getDb().query(`UPDATE messages SET created_at = now() - interval '3 hours' WHERE wa_id = '77010000110' AND sender = 'ai'`);
+  await getDb().query(`UPDATE contacts SET followup_sent_at = now() - interval '3 hours' WHERE wa_id = '77010000110' AND followup_sent_at IS NOT NULL`);
   nextReply = { reply: "Сәлеметсіз бе! Кеше келуді ойлаған едіңіз 😊 Бүгін 15:00-де келе аласыз ба?", handoff: false, handoff_reason: "", send_media: [] };
   assert.equal(await runFollowups(), 1);
   await getDb().query(`UPDATE messages SET created_at = now() - interval '3 hours' WHERE wa_id = '77010000110' AND sender = 'ai'`);
+  await getDb().query(`UPDATE contacts SET followup_sent_at = now() - interval '3 hours' WHERE wa_id = '77010000110' AND followup_sent_at IS NOT NULL`);
   assert.equal(await runFollowups(), 1, "second reminder");
   await updateSettings({ followup_persistent_all: false });
   await getDb().query(`UPDATE messages SET created_at = now() - interval '3 hours' WHERE wa_id = '77010000110' AND sender = 'ai'`);
+  await getDb().query(`UPDATE contacts SET followup_sent_at = now() - interval '3 hours' WHERE wa_id = '77010000110' AND followup_sent_at IS NOT NULL`);
   assert.equal(await runFollowups(), 0, "switched off");
 });
 
@@ -997,4 +1006,25 @@ test("interview reminder N hours before; 'yes' marks the interview confirmed; >2
   const ev = await getDb().query(`SELECT detail FROM events WHERE wa_id = '77010000121'`);
   assert.match(ev.at(-1).detail, /больше 24 ч/);
   await updateSettings({ business_mode: "sales" });
+});
+
+
+test("reminders never come in a burst: at most one per interval even if run repeatedly", async () => {
+  const { runFollowups } = await import("../src/campaigns.js");
+  await updateSettings({ followup_persistent_all: true, followup_hours: 2, followup_max: 4 });
+  await postWebhook(inbound("77010000130", "Вакансия қарастырып жүрсіз бе?"));
+  await drain();
+  await getDb().query(`UPDATE messages SET created_at = now() - interval '3 hours' WHERE wa_id = '77010000130' AND sender = 'ai'`);
+  nextReply = { reply: "Еске салайын 🙂", handoff: false, handoff_reason: "", send_media: [] };
+  assert.equal(await runFollowups(), 1);
+  // even if the just-sent reminder looked old, the previous-reminder guard blocks a second one
+  await getDb().query(`UPDATE messages SET created_at = now() - interval '3 hours' WHERE wa_id = '77010000130' AND sender = 'ai'`);
+  assert.equal(await runFollowups(), 0);
+  assert.equal(await runFollowups(), 0);
+  await updateSettings({ followup_persistent_all: false });
+});
+
+test("handoff fallback text is bilingual", async () => {
+  const { DEFAULT_SETTINGS } = await import("../src/settings.js");
+  assert.match(DEFAULT_SETTINGS.handoff_message, /Рахмет! Сұрағыңызды/);
 });
