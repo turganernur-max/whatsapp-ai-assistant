@@ -940,3 +940,19 @@ test("recruiting mode: vacancy rules in prompt, booked slots excluded, interview
   assert.equal(ov.hints.vacancies_missing, false);
   await updateSettings({ business_mode: "sales" });
 });
+
+test("'persistent for everyone' reminds chats left on the default mode", async () => {
+  const { runFollowups } = await import("../src/campaigns.js");
+  await updateSettings({ followup_enabled: false, followup_persistent_all: true, followup_hours: 2, followup_max: 3 });
+  nextReply = { reply: "Ертең 11:00 немесе 15:00 қай уақыт ыңғайлы?", handoff: false, handoff_reason: "", send_media: [] };
+  await postWebhook(inbound("77010000110", "Ертең сағат нешеде барайын"));
+  await drain();
+  await getDb().query(`UPDATE messages SET created_at = now() - interval '3 hours' WHERE wa_id = '77010000110' AND sender = 'ai'`);
+  nextReply = { reply: "Сәлеметсіз бе! Кеше келуді ойлаған едіңіз 😊 Бүгін 15:00-де келе аласыз ба?", handoff: false, handoff_reason: "", send_media: [] };
+  assert.equal(await runFollowups(), 1);
+  await getDb().query(`UPDATE messages SET created_at = now() - interval '3 hours' WHERE wa_id = '77010000110' AND sender = 'ai'`);
+  assert.equal(await runFollowups(), 1, "second reminder");
+  await updateSettings({ followup_persistent_all: false });
+  await getDb().query(`UPDATE messages SET created_at = now() - interval '3 hours' WHERE wa_id = '77010000110' AND sender = 'ai'`);
+  assert.equal(await runFollowups(), 0, "switched off");
+});

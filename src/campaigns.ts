@@ -29,29 +29,34 @@ export interface DueFollowup {
  *  - off: never
  * The counter resets whenever the client writes again.
  */
-export async function dueFollowups(hours: number, globalOn: boolean, max: number): Promise<DueFollowup[]> {
-  const rows = await getDb().query<DueFollowup & { last_inbound_at: Date }>(
-    `SELECT c.wa_id, c.followup_mode, c.followup_count,
-            (c.followup_mode = 'persistent' AND c.last_inbound_at < now() - interval '21 hours') AS final
-     FROM contacts c
+export async function dueFollowups(hours: number, globalOn: boolean, max: number, persistentAll = false): Promise<DueFollowup[]> {
+  // Effective mode: chats left on "default" become "persistent" when the owner chose that for everyone.
+  const rows = await getDb().query<DueFollowup>(
+    `WITH c AS (
+       SELECT c.*, CASE WHEN c.followup_mode = 'default' AND $4::boolean THEN 'persistent' ELSE c.followup_mode END AS mode
+       FROM contacts c
+     )
+     SELECT c.wa_id, c.mode AS followup_mode, c.followup_count,
+            (c.mode = 'persistent' AND c.last_inbound_at < now() - interval '21 hours') AS final
+     FROM c
      JOIN LATERAL (SELECT sender, created_at FROM messages m
                    WHERE m.wa_id = c.wa_id AND NOT (m.direction = 'out' AND m.status = 'failed')
                    ORDER BY m.id DESC LIMIT 1) last ON TRUE
-     WHERE c.ai_enabled AND NOT c.opted_out AND (NOT c.needs_attention OR c.followup_mode = 'persistent')
+     WHERE c.ai_enabled AND NOT c.opted_out AND (NOT c.needs_attention OR c.mode = 'persistent')
        AND (c.paused_until IS NULL OR c.paused_until < now())
        AND c.last_inbound_at > now() - interval '23 hours'
        AND last.sender = 'ai'
        AND (
-         (c.followup_mode = 'default' AND $2::boolean AND c.followup_count < 1
+         (c.mode = 'default' AND $2::boolean AND c.followup_count < 1
             AND last.created_at < now() - ($1::float8 * interval '1 hour'))
-         OR (c.followup_mode = 'once' AND c.followup_count < 1
+         OR (c.mode = 'once' AND c.followup_count < 1
             AND last.created_at < now() - ($1::float8 * interval '1 hour'))
-         OR (c.followup_mode = 'persistent' AND c.followup_count < $3::int
+         OR (c.mode = 'persistent' AND c.followup_count < $3::int
             AND (last.created_at < now() - ($1::float8 * interval '1 hour')
                  OR (c.last_inbound_at < now() - interval '21 hours' AND last.created_at < now() - interval '1 hour')))
        )
      LIMIT 20`,
-    [hours, globalOn, max],
+    [hours, globalOn, max, persistentAll],
   );
   return rows;
 }
@@ -66,7 +71,7 @@ export async function runFollowups(): Promise<number> {
     const s = await getSettings();
     if (!s.ai_enabled || !config.waToken) return 0;
     if (s.monthly_budget_usd > 0 && (await monthSpendUsd()) >= s.monthly_budget_usd) return 0;
-    const due = await dueFollowups(s.followup_hours, s.followup_enabled, s.followup_max);
+    const due = await dueFollowups(s.followup_hours, s.followup_enabled, s.followup_max, s.followup_persistent_all);
     if (!due.length) return 0;
     const kb = await getKnowledge();
     for (const f of due) {

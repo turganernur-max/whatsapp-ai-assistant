@@ -1431,6 +1431,7 @@
       <h2>🔔 Напоминание клиенту</h2>
       <div class="card">
         <label class="check"><span>Напоминать, если клиент замолчал<br><span class="muted small">AI один раз напишет короткое сообщение по теме разговора. Бесплатно: только в течение 24 часов после сообщения клиента.</span></span><input type="checkbox" id="fu-on" ${s.followup_enabled ? "checked" : ""}></label>
+        <label class="check"><span>Настойчиво для всех клиентов<br><span class="muted small">AI пишет повторно каждые N часов, пока человек не ответит (последний раз ~через 21 час, пока WhatsApp бесплатно). Для отдельных клиентов можно изменить в диалоге.</span></span><input type="checkbox" id="fu-all" ${s.followup_persistent_all ? "checked" : ""}></label>
         <label class="field">Через сколько часов после последнего ответа AI</label>
         <input type="text" inputmode="decimal" id="fu-hours" value="${s.followup_hours}">
         <label class="field">Режим «настойчиво»: максимум напоминаний одному клиенту</label>
@@ -1510,7 +1511,7 @@
       const mx = Number($("#fu-max").value);
       if (!(Number.isInteger(mx) && mx >= 1 && mx <= 10)) return toast("Максимум: от 1 до 10", true);
       try {
-        await api("PUT", "/api/settings", { followup_enabled: $("#fu-on").checked, followup_hours: h, followup_max: mx });
+        await api("PUT", "/api/settings", { followup_enabled: $("#fu-on").checked, followup_persistent_all: $("#fu-all").checked, followup_hours: h, followup_max: mx });
         toast("Сохранено ✓");
       } catch (err) {
         toast(err.message, true);
