@@ -110,11 +110,17 @@ const graph = http.createServer((req, res) => {
 const claudeCalls: any[] = [];
 let nextReply: any = { reply: "Здравствуйте! Стрижка стоит 5000 ₸.", handoff: false, handoff_reason: "" };
 let claudeError: Error | null = null;
+let duringClaude: (() => Promise<void>) | null = null;
 setClientForTests({
   beta: {
     messages: {
       create: async (params: any) => {
         claudeCalls.push(params);
+        if (duringClaude) {
+          const f = duringClaude;
+          duringClaude = null;
+          await f();
+        }
         if (claudeError) {
           const e = claudeError;
           claudeError = null;
@@ -1027,4 +1033,33 @@ test("reminders never come in a burst: at most one per interval even if run repe
 test("handoff fallback text is bilingual", async () => {
   const { DEFAULT_SETTINGS } = await import("../src/settings.js");
   assert.match(DEFAULT_SETTINGS.handoff_message, /Рахмет! Сұрағыңызды/);
+});
+
+
+test("a message that arrives while the AI is answering is answered next — no second greeting / empty turn", async () => {
+  nextReply = { reply: "Уағалейкумассалам! Танысып алайық: атыңыз кім?", handoff: false, handoff_reason: "", send_media: [] };
+  duringClaude = async () => {
+    await postWebhook(inbound("77010000140", "Жұмыс бойынша жазып тұр едім"));
+  };
+  await postWebhook(inbound("77010000140", "Ассалаумағалейкум"));
+  await drain();
+  assert.equal(claudeCalls.length, 2);
+  const second = claudeCalls[1].messages;
+  const lastUser = second.at(-1);
+  assert.equal(lastUser.role, "user");
+  const text = lastUser.content.map((b: any) => b.text).join(" ");
+  assert.match(text, /Жұмыс бойынша жазып тұр едім/);
+  assert.doesNotMatch(text, /клиент ничего не написал/);
+  assert.equal(second.at(-2).role, "assistant", "the earlier reply comes before the new message");
+});
+
+test("messages arriving before the history is read are answered in the same reply", async () => {
+  const { processContact } = await import("../src/processor.js");
+  await getDb().query(`INSERT INTO contacts (wa_id, name, last_inbound_at) VALUES ('77010000141', 'X', now())`);
+  await getDb().query(`INSERT INTO messages (wa_message_id, wa_id, direction, sender, text, status) VALUES ('wamid.L1','77010000141','in','contact','Ассалаумағалейкум','pending'), ('wamid.L2','77010000141','in','contact','Жұмыс бойынша','pending')`);
+  nextReply = { reply: "Уағалейкумассалам!", handoff: false, handoff_reason: "", send_media: [] };
+  await processContact("77010000141");
+  await drain();
+  assert.equal(claudeCalls.length, 1);
+  assert.equal(sent.length, 1);
 });

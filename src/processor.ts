@@ -301,14 +301,31 @@ export async function processContact(waId: string): Promise<void> {
 
   if (s.send_read_receipts && newest.wa_message_id) await wa.markReadAndTyping(newest.wa_message_id, true);
 
+  // Messages that arrived while we were preparing (e.g. "Ассалаумағалейкум" + "Жұмыс бойынша…")
+  // are answered in this same reply, so they don't trigger a second greeting afterwards.
+  const late = await d.query<Message>(
+    `UPDATE messages SET status = 'processing', claimed_at = now()
+     WHERE wa_id = $1 AND direction = 'in' AND status = 'pending' RETURNING *`,
+    [waId],
+  );
+  for (const m of late) {
+    claimed.push(m);
+    ids.push(m.id);
+  }
+  // History = earlier conversation, then the messages we are answering now — always last,
+  // even if an earlier reply was sent after they arrived.
   const hist = await d.query<{ sender: HistoryItem["sender"]; text: string | null; type: string }>(
     `SELECT sender, text, type FROM (
        SELECT id, sender, text, type FROM messages
-       WHERE wa_id = $1 AND NOT (direction = 'out' AND status = 'failed')
+       WHERE wa_id = $1 AND NOT (direction = 'out' AND status = 'failed') AND NOT (id = ANY($3::int[]))
        ORDER BY id DESC LIMIT $2) t ORDER BY id ASC`,
-    [waId, s.history_messages],
+    [waId, s.history_messages, ids],
   );
-  const history: HistoryItem[] = hist.map((h) => ({ sender: h.sender, text: h.text ?? `[${h.type}]` }));
+  const current = await d.query<{ sender: HistoryItem["sender"]; text: string | null; type: string }>(
+    `SELECT sender, text, type FROM messages WHERE id = ANY($1::int[]) ORDER BY id`,
+    [ids],
+  );
+  const history: HistoryItem[] = [...hist, ...current].map((h) => ({ sender: h.sender, text: h.text ?? `[${h.type}]` }));
   const kb = await getKnowledge();
   const learned = s.auto_learn_style
     ? (
