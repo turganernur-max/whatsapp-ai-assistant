@@ -745,6 +745,18 @@ export async function buildServer(): Promise<FastifyInstance> {
       return { ok: true };
     });
 
+    api.post("/api/whatsapp/register", async (req, reply) => {
+      const { pin } = z.object({ pin: z.string().regex(/^\d{6}$/, "PIN — ровно 6 цифр") }).parse(req.body);
+      try {
+        await wa.registerNumber(pin);
+        // make sure this account's messages reach our webhook
+        if (config.waBusinessAccountId) await wa.subscribeApp().catch(() => {});
+        return { ok: true };
+      } catch (e) {
+        return reply.code(400).send({ error: (e as Error).message });
+      }
+    });
+
     api.post("/api/whatsapp/subscribe", async (_req, reply) => {
       try {
         return { ok: true, result: await wa.subscribeApp() };

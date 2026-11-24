@@ -1261,7 +1261,14 @@
                <div class="status-row"><span>Имя</span><span>${esc(p.verified_name)}</span></div>
                <div class="status-row"><span>Качество</span><span>${esc(p.quality_rating || "—")}</span></div>
                <div class="status-row"><span>Платформа</span><span>${esc(p.platform_type || "—")}</span></div>
-               <div class="status-row"><span>Лимит сообщений</span><span>${esc(p.messaging_limit_tier || "—")}</span></div>`
+               <div class="status-row"><span>Лимит сообщений</span><span>${esc(p.messaging_limit_tier || "—")}</span></div>
+               ${
+                 p.platform_type && p.platform_type !== "CLOUD_API"
+                   ? `<div class="banner warn small">Номер ещё не зарегистрирован в WhatsApp Cloud API — клиенты не смогут писать. Придумайте 6-значный PIN (запомните его: это PIN двухшаговой проверки номера) и нажмите «Зарегистрировать».</div>
+                      <input type="text" inputmode="numeric" maxlength="6" id="reg-pin" placeholder="6 цифр, например 482915">
+                      <button class="btn primary wide" id="reg-btn">Зарегистрировать номер</button>`
+                   : ""
+               }`
             : `<div class="banner ${st.phone_error ? "danger" : "warn"}">${esc(st.phone_error || "Номер не подключён")}</div>`
         }
         <div class="status-row"><span>Приложение подписано на события WABA</span><span>${st.subscribed === true ? "✅" : st.subscribed === false ? "❌" : "—"}</span></div>
@@ -1308,6 +1315,18 @@
         }
       });
     }
+    if ($("#reg-btn"))
+      $("#reg-btn").addEventListener("click", async () => {
+        const pin = $("#reg-pin").value.trim();
+        if (!/^\d{6}$/.test(pin)) return toast("PIN — ровно 6 цифр", true);
+        try {
+          await api("POST", "/api/whatsapp/register", { pin });
+          toast("Номер зарегистрирован ✓ Сохраните PIN в «Заметках».");
+          renderWhatsapp();
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
     $("#subscribe").addEventListener("click", async () => {
       try {
         await api("POST", "/api/whatsapp/subscribe");

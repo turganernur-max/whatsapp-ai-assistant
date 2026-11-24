@@ -26,6 +26,7 @@ let failSends = false;
 let authFail = false;
 const ownSent: any[] = [];
 const unexpectedGraph: string[] = [];
+const registered: string[] = [];
 const graph = http.createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
@@ -85,6 +86,12 @@ const graph = http.createServer((req, res) => {
       sent.push(b);
       return res.end(JSON.stringify({ messages: [{ id: "wamid.OUT" + (++outCounter) }] }));
     }
+    if (req.method === "POST" && req.url?.endsWith("/PN1/register")) {
+      const rb = JSON.parse(body);
+      registered.push(rb.pin);
+      return res.end('{"success":true}');
+    }
+    if (req.method === "POST" && req.url?.endsWith("/WABA1/subscribed_apps")) return res.end('{"success":true}');
     if (req.method === "GET" && req.url?.includes("/PN1?")) {
       return res.end(JSON.stringify({ display_phone_number: "+1 555 0100", verified_name: "Test", quality_rating: "GREEN" }));
     }
@@ -888,4 +895,14 @@ test("panel CSP allows the Meta signup popup and nothing else external", async (
 
 test("no Graph calls were made with an unexpected token", () => {
   assert.deepEqual(unexpectedGraph, []);
+});
+
+
+test("register a new number with a 6-digit PIN from the panel", async () => {
+  const h = await login();
+  const bad = await app.inject({ method: "POST", url: "/api/whatsapp/register", headers: h, payload: { pin: "12ab" } });
+  assert.equal(bad.statusCode, 400);
+  const ok = await app.inject({ method: "POST", url: "/api/whatsapp/register", headers: h, payload: { pin: "482915" } });
+  assert.equal(ok.statusCode, 200, ok.body);
+  assert.deepEqual(registered, ["482915"]);
 });

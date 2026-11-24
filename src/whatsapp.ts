@@ -302,6 +302,12 @@ export async function getSubscribedApps() {
   return graph("GET", `${config.waBusinessAccountId}/subscribed_apps`, undefined, 1);
 }
 
+/** Registers a verified phone number on the Cloud API (sets the two-step verification PIN). */
+export async function registerNumber(pin: string) {
+  if (!/^\d{6}$/.test(pin)) throw new WhatsAppError("PIN — ровно 6 цифр", 0);
+  return graph("POST", `${config.waPhoneNumberId}/register`, { messaging_product: "whatsapp", pin }, 1);
+}
+
 export async function subscribeApp() {
   if (!config.waBusinessAccountId) throw new WhatsAppError("WHATSAPP_BUSINESS_ACCOUNT_ID не настроен", 0);
   return graph("POST", `${config.waBusinessAccountId}/subscribed_apps`, undefined, 1);
