@@ -158,6 +158,11 @@
       b.textContent = o.attention;
       b.classList.remove("hidden");
     } else b.classList.add("hidden");
+    businessMode = o.business_mode || "sales";
+    const tabLabel = document.querySelector('.tabbar a[data-tab="orders"] span:nth-child(2)');
+    const tabIco = document.querySelector('.tabbar a[data-tab="orders"] .ico');
+    if (tabLabel) tabLabel.textContent = businessMode === "recruiting" ? "Собесед." : "Заказы";
+    if (tabIco) tabIco.textContent = businessMode === "recruiting" ? "🗓" : "📦";
     const bo = $("#badge-orders");
     if (o.orders_attention > 0) {
       bo.textContent = o.orders_attention;
@@ -223,6 +228,8 @@
     if (!o.integrations.claude) warn.push(`<div class="banner danger">Ключ Claude API не задан.</div>`);
     if (o.wa_auth_error)
       warn.push(`<div class="banner danger"><b>WhatsApp не работает: токен недействителен или истёк.</b> AI не может отвечать клиентам. Создайте новый токен в Meta и замените WHATSAPP_TOKEN в Render. <a href="#whatsapp">Подробнее</a></div>`);
+    if (o.hints && o.hints.vacancies_missing)
+      warn.push(`<div class="banner warn small">Режим найма: заполните вакансии и график собеседований — иначе AI не сможет записывать кандидатов. <a href="#ai-settings">Заполнить</a></div>`);
     if (o.hints && o.hints.payment_missing)
       warn.push(`<div class="banner warn small">Не заполнено «Как оплатить» — AI не сможет дать клиенту реквизиты Kaspi. <a href="#ai-settings">Заполнить</a></div>`);
     if (o.monthly_budget > 0 && o.month_spend >= o.monthly_budget)
@@ -524,7 +531,7 @@
   }
 
   // ---------------- Orders ----------------
-  const ORDER_STATUS = {
+  const SALE_STATUS = {
     new: { t: "🆕 Новый", next: "contacted" },
     contacted: { t: "📞 Связались", next: "payment_check" },
     payment_check: { t: "💳 Проверить оплату", next: "paid" },
@@ -533,19 +540,41 @@
     done: { t: "🏁 Выполнен", next: null },
     cancelled: { t: "✖ Отменён", next: null },
   };
+  const INTERVIEW_STATUS = {
+    new: { t: "🆕 Записан", next: "contacted" },
+    contacted: { t: "📞 Подтвердил", next: "paid" },
+    payment_check: { t: "🕒 Ожидает", next: "paid" },
+    paid: { t: "✅ Пришёл", next: "shipped" },
+    shipped: { t: "🤝 Принят на работу", next: "done" },
+    done: { t: "🏁 Закрыто", next: null },
+    cancelled: { t: "✖ Отказ / не пришёл", next: null },
+  };
+  let businessMode = "sales";
   const tenge = (n) => (Number(n) > 0 ? Math.round(Number(n)).toLocaleString("ru-RU") + " ₸" : "—");
   let orderFilter = "open";
 
   async function renderOrders() {
-    title("Заказы");
+    const ov = await api("GET", "/api/overview").catch(() => ({ hints: {} }));
+    const hr = ov.business_mode === "recruiting";
+    const ORDER_STATUS = hr ? INTERVIEW_STATUS : SALE_STATUS;
+    if (hr && (orderFilter === "payment_check" || orderFilter === "paid")) orderFilter = "open";
+    title(hr ? "Собеседования" : "Заказы");
     const r = await api("GET", `/api/orders?status=${orderFilter}`);
     const sm = r.summary;
-    const ov = await api("GET", "/api/overview").catch(() => ({ hints: {} }));
     const hint = ov.hints && ov.hints.push_missing
-      ? `<div class="banner warn small">Уведомления о новых заказах на телефон не подключены. Установите приложение <b>ntfy</b> и добавьте NTFY_TOPIC в Render (инструкция в docs/SETUP_RU.md, шаг 9).</div>`
+      ? `<div class="banner warn small">Уведомления о новых ${hr ? "записях" : "заказах"} на телефон не подключены. Установите приложение <b>ntfy</b> и добавьте NTFY_TOPIC в Render (инструкция в docs/SETUP_RU.md, шаг 9).</div>`
       : "";
     view.innerHTML = `${hint}
-      <div class="stats-grid">
+      ${
+        hr
+          ? `<div class="stats-grid">
+        <div class="stat"><div class="v">${sm.open}</div><div class="l">Предстоящих собеседований</div></div>
+        <div class="stat"><div class="v">${sm.month_orders}</div><div class="l">Записей за месяц</div></div>
+      </div>
+      <div class="seg" id="o-seg">
+        <button data-f="open">Предстоящие</button><button data-f="shipped">Приняты</button><button data-f="">Все</button>
+      </div>`
+          : `<div class="stats-grid">
         <div class="stat"><div class="v">${sm.open}</div><div class="l">Открытых заказов</div></div>
         <div class="stat"><div class="v">${sm.payment_check}</div><div class="l">Проверить оплату</div></div>
         <div class="stat"><div class="v">${sm.month_orders}</div><div class="l">Заказов за месяц</div></div>
@@ -553,7 +582,8 @@
       </div>
       <div class="seg" id="o-seg">
         <button data-f="open">Открытые</button><button data-f="payment_check">Оплата</button><button data-f="paid">Оплачены</button><button data-f="">Все</button>
-      </div>
+      </div>`
+      }
       <div id="o-list">${
         r.items.length
           ? r.items
@@ -562,10 +592,18 @@
                 const next = st.next ? ORDER_STATUS[st.next] : null;
                 return `<div class="card order">
                   <div class="top row"><b class="grow">#${o.id} · ${esc(o.customer_name || o.contact_name || "+" + o.wa_id)}</b><span class="pill ${o.status === "payment_check" || o.status === "new" ? "att" : "off"}">${st.t}</span></div>
-                  <div class="o-items">${esc(o.items)}</div>
+                  ${
+                    hr
+                      ? `<div class="o-items">💼 ${esc(o.items)}</div>
+                  <div class="row"><b>🗓 ${esc(o.address || "время не указано")}</b></div>
+                  ${o.city ? `<div class="small">📍 ${esc(o.city)}</div>` : ""}
+                  ${o.delivery ? `<div class="small">🏢 ${esc(o.delivery)}</div>` : ""}
+                  <div class="small muted">записан ${fmtTime(o.created_at)}</div>`
+                      : `<div class="o-items">${esc(o.items)}</div>
                   <div class="row small"><b>${tenge(o.total)}</b><span class="muted">· ${fmtTime(o.created_at)}</span></div>
                   ${o.city || o.address ? `<div class="small">📍 ${esc([o.city, o.address].filter(Boolean).join(", "))}</div>` : ""}
-                  ${o.delivery ? `<div class="small">🚚 ${esc(o.delivery)}</div>` : ""}
+                  ${o.delivery ? `<div class="small">🚚 ${esc(o.delivery)}</div>` : ""}`
+                  }
                   ${o.comment ? `<div class="small muted">💬 ${esc(o.comment)}</div>` : ""}
                   ${o.owner_note ? `<div class="small">📝 ${esc(o.owner_note)}</div>` : ""}
                   <div class="row o-actions">
@@ -580,7 +618,9 @@
                 </div>`;
               })
               .join("")
-          : '<div class="card muted">Заказов нет. Когда клиент подтвердит заказ в переписке, AI создаст его здесь и пришлёт вам уведомление.</div>'
+          : hr
+            ? '<div class="card muted">Записей пока нет. Когда кандидат подтвердит время в переписке, AI создаст запись здесь и пришлёт вам уведомление.</div>'
+            : '<div class="card muted">Заказов нет. Когда клиент подтвердит заказ в переписке, AI создаст его здесь и пришлёт вам уведомление.</div>'
       }</div>`;
     const seg = $("#o-seg");
     seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.f === orderFilter));
@@ -590,8 +630,8 @@
       renderOrders();
     });
     const setStatus = async (id, status) => {
-      if (status === "paid" && !confirm("Вы проверили поступление денег в Kaspi?")) return;
-      if (status === "cancelled" && !confirm("Отменить заказ?")) return;
+      if (!hr && status === "paid" && !confirm("Вы проверили поступление денег в Kaspi?")) return;
+      if (status === "cancelled" && !confirm(hr ? "Отметить: отказ / не пришёл?" : "Отменить заказ?")) return;
       await api("PATCH", `/api/orders/${id}`, { status });
       toast("Статус: " + ORDER_STATUS[status].t);
       renderOrders();
@@ -1073,11 +1113,27 @@
         <input type="text" id="timezone" value="${esc(s.timezone)}">
       </div>
       <div class="card">
+        <label class="field">Режим работы AI</label>
+        <select id="business_mode">
+          <option value="sales" ${s.business_mode === "sales" ? "selected" : ""}>🛒 Продажи (каталог, заказы, Kaspi)</option>
+          <option value="recruiting" ${s.business_mode === "recruiting" ? "selected" : ""}>💼 Найм сотрудников (вакансии, запись на собеседование)</option>
+          <option value="general" ${s.business_mode === "general" ? "selected" : ""}>💬 Просто консультации</option>
+        </select>
+        <div id="hr-box" class="${s.business_mode === "recruiting" ? "" : "hidden"}">
+          <label class="field">Вакансии: должность, обязанности, зарплата, график, требования, адрес</label>
+          <textarea id="vacancies" class="big" placeholder="Продавец-консультант. Алматы, ТРЦ ... График 2/2 с 10:00 до 22:00. Зарплата 250 000 ₸ + бонусы. Требования: опыт продаж желателен, грамотная речь.">${esc(s.vacancies)}</textarea>
+          <label class="field">Вопросы кандидату (AI задаст их по одному)</label>
+          <textarea id="screening_questions" placeholder="Как вас зовут? В каком городе живёте? Есть ли опыт работы продавцом? Когда готовы выйти на работу?">${esc(s.screening_questions)}</textarea>
+          <label class="field">График собеседований: дни, часы, длительность, адрес или формат</label>
+          <textarea id="interview_schedule" placeholder="Пн–Пт с 11:00 до 17:00, каждые 30 минут. Адрес: Алматы, ул. Абая 10, офис 5. С собой: удостоверение личности.">${esc(s.interview_schedule)}</textarea>
+        </div>
+        <div id="sales-box" class="${s.business_mode === "sales" ? "" : "hidden"}">
         ${chk("sales_mode", "Режим продаж", "AI выясняет потребность, предлагает из каталога, отвечает на возражения, оформляет заказ и даёт реквизиты для оплаты")}
         <label class="field">Как оплатить (AI отправит это клиенту после подтверждения заказа)</label>
         <textarea id="payment_instructions" placeholder="Оплата через Kaspi: переведите на номер +7 7XX XXX XX XX (Имя Ф.) или по ссылке Kaspi Pay: ... После оплаты пришлите, пожалуйста, чек.">${esc(s.payment_instructions)}</textarea>
         <label class="field">Доставка и получение</label>
         <textarea id="delivery_info" placeholder="Доставка по всему Казахстану: по городу — 1000 ₸, 1 день; в другие города — Kazpost/СДЭК 1500–2500 ₸, 2–5 дней. Самовывоз: адрес...">${esc(s.delivery_info)}</textarea>
+        </div>
       </div>
       <div class="card">
         ${chk("human_style", "Писать как живой человек", "Коротко, без шаблонных фраз робота, от лица бизнеса; длинный ответ — 2–3 сообщениями. Если клиент прямо спросит «вы бот?», AI честно ответит.")}
@@ -1101,6 +1157,10 @@
         <input type="number" id="max_ai_replies_per_hour" min="1" max="500" value="${s.max_ai_replies_per_hour}">
       </div>
       <button class="btn primary wide" id="save">Сохранить</button>`;
+    $("#business_mode").addEventListener("change", (e) => {
+      $("#hr-box").classList.toggle("hidden", e.target.value !== "recruiting");
+      $("#sales-box").classList.toggle("hidden", e.target.value !== "sales");
+    });
     $("#save").addEventListener("click", async () => {
       const num = (id) => Number(String($("#" + id).value).replace(/\s/g, "").replace(",", "."));
       try {
@@ -1116,6 +1176,10 @@
           human_style: $("#human_style").checked,
           human_delay: $("#human_delay").checked,
           sales_mode: $("#sales_mode").checked,
+          business_mode: $("#business_mode").value,
+          vacancies: $("#vacancies").value,
+          screening_questions: $("#screening_questions").value,
+          interview_schedule: $("#interview_schedule").value,
           payment_instructions: $("#payment_instructions").value,
           delivery_info: $("#delivery_info").value,
           disclosure_text: $("#disclosure_text").value,

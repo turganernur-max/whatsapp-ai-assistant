@@ -147,18 +147,34 @@ export const SALES_RULES = `ПРОДАЖИ (ты ещё и продавец)
 - Если клиент пишет, что оплатил, или присылает чек/скриншот — payment_claimed=true; ответь, что передал оплату на проверку и скоро подтвердят. Никогда не подтверждай оплату сам.
 - Не принимай оплату другими способами и не давай реквизиты, которых нет в разделе ОПЛАТА.`;
 
+export const RECRUIT_RULES = `НАЙМ СОТРУДНИКОВ (тебе пишут кандидаты на вакансии)
+- Твоя задача — коротко рассказать о вакансии, задать кандидату вопросы владельца и записать подходящего кандидата на собеседование.
+- О вакансиях (обязанности, зарплата, график, требования, адрес) говори только то, что есть в разделе ВАКАНСИИ. Чего там нет — скажи, что уточнишь, и не выдумывай. Не обещай, что кандидата точно возьмут.
+- Вопросы из раздела ВОПРОСЫ КАНДИДАТУ задавай по одному, естественно, как в живой переписке. Если кандидат уже ответил на что-то сам — не переспрашивай.
+- Никогда не спрашивай и не учитывай национальность, религию, семейное положение, беременность, планы на детей, внешность, политические взгляды; не отказывай по полу или возрасту (если владелец не указал требование, прямо установленное законом для этой работы). Не запрашивай ИИН, номер удостоверения, данные карт.
+- Если кандидат явно не подходит по требованиям вакансии (например, нет обязательного документа/навыка) — вежливо скажи, что передашь анкету владельцу, и поставь handoff=true; не отказывай резко.
+- Запись: предложи 2–3 конкретных времени из раздела ГРАФИК СОБЕСЕДОВАНИЙ (с датой, начиная с сегодняшнего/завтрашнего дня по текущей дате), исключая время из списка ЗАНЯТО. Если кандидату неудобно — предложи другие варианты из графика. Сообщи адрес/формат собеседования из графика и что взять с собой, если это указано.
+- Перед записью коротко повтори: вакансия, имя, дата и время, адрес/формат — и спроси «Подтверждаете?». Только после явного «да» поставь order.confirmed=true и заполни: items — название вакансии; customer_name — имя кандидата; city — город кандидата; address — дата и время собеседования в формате «ДД.ММ.ГГГГ ЧЧ:ММ»; delivery — формат/адрес собеседования; comment — краткая выжимка ответов кандидата (опыт, когда может выйти и т.п.); total=0.
+- Если кандидат просит перенести или отменить собеседование — помоги выбрать новое время (снова подтверди и поставь order.confirmed=true с новым временем) или поставь handoff=true при отмене.
+- payment_claimed всегда false.`;
+
 export function buildSystem(
   s: Settings,
   kb: KnowledgeItem[],
   learnedStyle: string[],
   media: MediaOption[] = [],
   catalog: CatalogItem[] = [],
+  busySlots: string[] = [],
 ) {
+  const mode = s.business_mode ?? "sales";
+  const selling = mode === "sales" && s.sales_mode;
+  const recruiting = mode === "recruiting";
+  const modeRules = selling ? SALES_RULES + "\n" : recruiting ? RECRUIT_RULES + "\n" : "";
   const parts: string[] = [
     CORE_RULES.replace("{MAX_CHARS}", String(s.max_reply_chars))
       .replace("{HANDOFF_RULES}", HANDOFF_RULES[s.handoff_mode] ?? HANDOFF_RULES.balanced)
       .replace("{HUMAN_STYLE}", s.human_style ? HUMAN_STYLE : "")
-      .replace("{SALES}", s.sales_mode ? SALES_RULES + "\n" : ""),
+      .replace("{SALES}", modeRules),
   ];
   if (s.business_name || s.owner_name) {
     parts.push(
@@ -173,7 +189,7 @@ export function buildSystem(
     ? kb.map((k, i) => `### ${i + 1}. ${k.title}\n${k.content.trim()}`).join("\n\n")
     : "(база знаний пуста — на фактические вопросы отвечай, что уточнишь у владельца)";
   parts.push(`БАЗА ЗНАНИЙ (единственный источник фактов)\n${kbText}`);
-  if (catalog.length) {
+  if (catalog.length && mode === "sales") {
     const fmt = (n: number) => (n > 0 ? `${n.toLocaleString("ru-RU")} ${s.currency}` : "цена по запросу");
     parts.push(
       "КАТАЛОГ (товары и услуги; цены и наличие — только отсюда)\n" +
@@ -186,7 +202,12 @@ export function buildSystem(
           .join("\n"),
     );
   }
-  if (s.sales_mode) {
+  if (recruiting) {
+    parts.push(`ВАКАНСИИ\n${s.vacancies.trim() || "(не заполнено — о вакансии ничего не обещай, передай владельцу)"}`);
+    parts.push(`ВОПРОСЫ КАНДИДАТУ\n${s.screening_questions.trim() || "Имя; город; опыт работы по этой специальности; когда готов выйти на работу."}`);
+    parts.push(`ГРАФИК СОБЕСЕДОВАНИЙ\n${s.interview_schedule.trim() || "(не заполнено — время собеседования не назначай, передай владельцу)"}`);
+  }
+  if (selling) {
     parts.push(`ОПЛАТА\n${s.payment_instructions.trim() || "(не заполнено — оплату не обсуждай, передай владельцу)"}`);
     parts.push(`ДОСТАВКА И ПОЛУЧЕНИЕ\n${s.delivery_info.trim() || "(не заполнено — условия доставки уточнит владелец)"}`);
   }
@@ -202,6 +223,14 @@ export function buildSystem(
     // Stable prefix -> cached, so repeated messages cost much less.
     { type: "text", text: parts.join("\n\n"), cache_control: { type: "ephemeral" } },
   ];
+  if (recruiting) {
+    system.push({
+      type: "text",
+      text:
+        "ЗАНЯТО (на это время уже записаны другие кандидаты — не предлагай его):\n" +
+        (busySlots.length ? busySlots.map((b) => `- ${b}`).join("\n") : "(пока свободно всё время из графика)"),
+    });
+  }
   if (learnedStyle.length) {
     system.push({
       type: "text",
@@ -266,7 +295,7 @@ export async function generateReply(
   history: HistoryItem[],
   images: ImageInput[],
   media: MediaOption[] = [],
-  opts: { followupHours?: number; followupAttempt?: number; followupFinal?: boolean; catalog?: CatalogItem[] } = {},
+  opts: { followupHours?: number; followupAttempt?: number; followupFinal?: boolean; catalog?: CatalogItem[]; busySlots?: string[] } = {},
 ): Promise<AiDecision> {
   if (!config.anthropicApiKey && !client) throw new AiError("ANTHROPIC_API_KEY не настроен", false);
   const nowText = new Intl.DateTimeFormat("ru-RU", {
@@ -278,7 +307,7 @@ export async function generateReply(
   const params: Anthropic.Beta.MessageCreateParamsNonStreaming = {
     model: s.model,
     max_tokens: 8000,
-    system: buildSystem(s, kb, learnedStyle, media, opts.catalog ?? []),
+    system: buildSystem(s, kb, learnedStyle, media, opts.catalog ?? [], opts.busySlots ?? []),
     messages: buildMessages(
       history,
       images,

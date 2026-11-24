@@ -906,3 +906,37 @@ test("register a new number with a 6-digit PIN from the panel", async () => {
   assert.equal(ok.statusCode, 200, ok.body);
   assert.deepEqual(registered, ["482915"]);
 });
+
+test("recruiting mode: vacancy rules in prompt, booked slots excluded, interview saved and owner notified", async () => {
+  await updateSettings({
+    business_mode: "recruiting",
+    vacancies: "Продавец-консультант, Алматы, 2/2, 250 000 ₸",
+    screening_questions: "Имя? Город? Опыт продаж?",
+    interview_schedule: "Пн–Пт 11:00–17:00, каждые 30 минут, ул. Абая 10",
+  });
+  const interview = { confirmed: true, items: "Продавец-консультант", total: 0, customer_name: "Айгерим", city: "Алматы", address: "26.11.2026 11:00", delivery: "ул. Абая 10", comment: "опыт 2 года, может выйти с понедельника" };
+  nextReply = { reply: "Жазып қойдым: 26.11 сағат 11:00, Абай 10 ✅", handoff: false, handoff_reason: "", send_media: [], order: interview, payment_claimed: false };
+  await postWebhook(inbound("77010000101", "Иә, растаймын"));
+  await drain();
+  const sys = claudeCalls.at(-1).system[0].text as string;
+  assert.match(sys, /НАЙМ СОТРУДНИКОВ/);
+  assert.match(sys, /ВАКАНСИИ\nПродавец-консультант/);
+  assert.match(sys, /ГРАФИК СОБЕСЕДОВАНИЙ\nПн–Пт/);
+  assert.match(sys, /национальность, религию/);
+  assert.doesNotMatch(sys, /ПРОДАЖИ \(ты ещё и продавец\)/);
+  const [o] = await getDb().query(`SELECT * FROM orders WHERE wa_id = '77010000101'`);
+  assert.equal(o.address, "26.11.2026 11:00");
+  assert.equal(o.comment, interview.comment);
+
+  // next candidate: the booked time is listed as busy
+  nextReply = { reply: "Қай күн ыңғайлы?", handoff: false, handoff_reason: "", send_media: [], order: { ...interview, confirmed: false }, payment_claimed: false };
+  await postWebhook(inbound("77010000102", "Вакансия бар ма?"));
+  await drain();
+  const busy = claudeCalls.at(-1).system.map((b: any) => b.text).join("\n");
+  assert.match(busy, /ЗАНЯТО[\s\S]*26\.11\.2026 11:00 \(Продавец-консультант\)/);
+  const h = await login();
+  const ov = (await app.inject({ url: "/api/overview", headers: h })).json();
+  assert.equal(ov.business_mode, "recruiting");
+  assert.equal(ov.hints.vacancies_missing, false);
+  await updateSettings({ business_mode: "sales" });
+});

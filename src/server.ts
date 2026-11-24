@@ -166,10 +166,12 @@ export async function buildServer(): Promise<FastifyInstance> {
       );
       return {
         ai_enabled: s.ai_enabled,
+        business_mode: s.business_mode,
         wa_auth_error: wa.waHealth.authError,
         hints: {
-          payment_missing: s.sales_mode && !s.payment_instructions.trim(),
-          delivery_missing: s.sales_mode && !s.delivery_info.trim(),
+          payment_missing: s.business_mode === "sales" && s.sales_mode && !s.payment_instructions.trim(),
+          delivery_missing: s.business_mode === "sales" && s.sales_mode && !s.delivery_info.trim(),
+          vacancies_missing: s.business_mode === "recruiting" && (!s.vacancies.trim() || !s.interview_schedule.trim()),
           push_missing: !config.ntfyTopic,
         },
         month_spend: await monthSpendUsd(),
@@ -597,7 +599,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       }
       try {
         const kb = await getKnowledge();
-        const { catalog, media } = await aiSalesContext();
+        const { catalog, media, busySlots } = await aiSalesContext();
         const r = await generateReply(
           s,
           kb,
@@ -605,7 +607,7 @@ export async function buildServer(): Promise<FastifyInstance> {
           b.messages.map((m) => ({ sender: m.from === "client" ? "contact" : "ai", text: m.text })),
           [],
           media,
-          { catalog },
+          { catalog, busySlots },
         );
         const cost = costUsd(r.model, r.usage);
         await recordUsage({

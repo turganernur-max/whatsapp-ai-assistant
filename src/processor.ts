@@ -315,8 +315,8 @@ export async function processContact(waId: string): Promise<void> {
 
   let decision;
   try {
-    const { catalog, media } = await aiSalesContext();
-    decision = await generateReply(s, kb, learned, history, images, media, { catalog });
+    const { catalog, media, busySlots } = await aiSalesContext();
+    decision = await generateReply(s, kb, learned, history, images, media, { catalog, busySlots });
   } catch (e) {
     const err = e as AiError;
     const n = (retries.get(waId) ?? 0) + 1;

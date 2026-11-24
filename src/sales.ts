@@ -3,17 +3,28 @@ import type { CatalogItem, OrderDraft } from "./ai.js";
 import { getContact, logEvent } from "./store.js";
 import { notifyOwner } from "./notify.js";
 import { listMedia } from "./media.js";
+import { getSettings } from "./settings.js";
 import type { MediaOption } from "./ai.js";
 
 /** Everything the AI needs to sell: the catalog plus the files it may send (library + product photos). */
-export async function aiSalesContext(): Promise<{ catalog: CatalogItem[]; media: MediaOption[] }> {
+/** Interview times already booked (open, not cancelled) — the AI must not offer them again. */
+export async function busyInterviewSlots(): Promise<string[]> {
+  const rows = await getDb().query<{ address: string; items: string }>(
+    `SELECT address, items FROM orders WHERE status NOT IN ('cancelled','done') AND address <> ''
+       AND created_at > now() - interval '60 days' ORDER BY id DESC LIMIT 200`,
+  );
+  return rows.map((r) => `${r.address}${r.items ? " (" + r.items + ")" : ""}`);
+}
+
+export async function aiSalesContext(): Promise<{ catalog: CatalogItem[]; media: MediaOption[]; busySlots: string[] }> {
+  const busySlots = await busyInterviewSlots();
   const catalog = await listCatalog();
   const wanted = new Set(catalogMediaIds(catalog));
   const all = await listMedia(false);
   const media = all
     .filter((m) => m.enabled || wanted.has(m.id))
     .map((m) => ({ id: m.id, title: m.title, description: m.description, kind: m.kind }));
-  return { catalog, media };
+  return { catalog, media, busySlots };
 }
 
 export const ORDER_STATUSES = ["new", "contacted", "payment_check", "paid", "shipped", "done", "cancelled"] as const;
@@ -62,9 +73,12 @@ export async function saveOrder(waId: string, o: OrderDraft): Promise<{ id: numb
   );
   await logEvent("order", waId, `Новый заказ #${row.id}: ${o.items} — ${money(o.total)}`);
   const c = await getContact(waId);
+  const recruiting = (await getSettings()).business_mode === "recruiting";
   await notifyOwner(
-    `🛒 Новый заказ #${row.id} — ${money(o.total)}`,
-    `${o.customer_name || c?.name || "+" + waId}${o.city ? ", " + o.city : ""}: ${o.items}`,
+    recruiting ? `🗓 Запись на собеседование: ${o.address || "время не указано"}` : `🛒 Новый заказ #${row.id} — ${money(o.total)}`,
+    recruiting
+      ? `${o.customer_name || c?.name || "+" + waId} — ${o.items}${o.city ? ", " + o.city : ""}`
+      : `${o.customer_name || c?.name || "+" + waId}${o.city ? ", " + o.city : ""}: ${o.items}`,
     `/#orders`,
   );
   return { id: row.id, created: true };
