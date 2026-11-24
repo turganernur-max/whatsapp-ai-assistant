@@ -46,6 +46,7 @@ export interface AiDecision {
   mediaIds: number[];
   order: OrderDraft | null;
   paymentClaimed: boolean;
+  interviewConfirmed: boolean;
   handoff: boolean;
   handoffReason: string;
   model: string;
@@ -94,8 +95,9 @@ const OUTPUT_SCHEMA = {
       additionalProperties: false,
     },
     payment_claimed: { type: "boolean", description: "true, если клиент сообщил об оплате или прислал чек/скрин оплаты." },
+    interview_confirmed: { type: "boolean", description: "true, если кандидат подтвердил, что точно придёт на назначенное собеседование (например, ответил «да, приду» на напоминание)." },
   },
-  required: ["reply", "handoff", "handoff_reason", "send_media", "order", "payment_claimed"],
+  required: ["reply", "handoff", "handoff_reason", "send_media", "order", "payment_claimed", "interview_confirmed"],
   additionalProperties: false,
 } as const;
 
@@ -156,6 +158,7 @@ export const RECRUIT_RULES = `НАЙМ СОТРУДНИКОВ (тебе пишу
 - Запись: предложи 2–3 конкретных времени из раздела ГРАФИК СОБЕСЕДОВАНИЙ (с датой, начиная с сегодняшнего/завтрашнего дня по текущей дате), исключая время из списка ЗАНЯТО. Если кандидату неудобно — предложи другие варианты из графика. Сообщи адрес/формат собеседования из графика и что взять с собой, если это указано.
 - Перед записью коротко повтори: вакансия, имя, дата и время, адрес/формат — и спроси «Подтверждаете?». Только после явного «да» поставь order.confirmed=true и заполни: items — название вакансии; customer_name — имя кандидата; city — город кандидата; address — дата и время собеседования в формате «ДД.ММ.ГГГГ ЧЧ:ММ»; delivery — формат/адрес собеседования; comment — краткая выжимка ответов кандидата (опыт, когда может выйти и т.п.); total=0.
 - Если кандидат просит перенести или отменить собеседование — помоги выбрать новое время (снова подтверди и поставь order.confirmed=true с новым временем) или поставь handoff=true при отмене.
+- Если тебе пришло напоминание о собеседовании и кандидат отвечает, что придёт («иә», «келемін», «да», «буду») — поблагодари коротко и поставь interview_confirmed=true. Если не может прийти — предложи другое время из графика (и подтверди новую запись через order) или поставь handoff=true.
 - payment_claimed всегда false.`;
 
 export function buildSystem(
@@ -345,7 +348,7 @@ export async function generateReply(
   const model = res.model || s.model;
 
   if (res.stop_reason === "refusal") {
-    return { reply: "", mediaIds: [], order: null, paymentClaimed: false, handoff: true, handoffReason: "AI отказался отвечать на это сообщение", model, usage };
+    return { reply: "", mediaIds: [], order: null, paymentClaimed: false, interviewConfirmed: false, handoff: true, handoffReason: "AI отказался отвечать на это сообщение", model, usage };
   }
   const text = res.content
     .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
@@ -379,6 +382,7 @@ export async function generateReply(
       mediaIds,
       order,
       paymentClaimed: parsed.payment_claimed === true,
+      interviewConfirmed: parsed.interview_confirmed === true,
       handoff,
       handoffReason: handoff ? String(parsed.handoff_reason || "AI не смог ответить") : "",
       model,
@@ -390,6 +394,7 @@ export async function generateReply(
       mediaIds: [],
       order: null,
       paymentClaimed: false,
+      interviewConfirmed: false,
       handoff: true,
       handoffReason: res.stop_reason === "max_tokens" ? "Ответ AI оборван (лимит токенов)" : "AI вернул некорректный ответ",
       model,

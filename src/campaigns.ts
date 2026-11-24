@@ -6,6 +6,7 @@ import { costUsd } from "./pricing.js";
 import * as wa from "./whatsapp.js";
 import { getKnowledge, insertMessage, logEvent, monthSpendUsd, recordUsage, updateContact } from "./store.js";
 import { sendAndStore } from "./processor.js";
+import { notifyOwner } from "./notify.js";
 
 // =====================================================================
 // 1) Follow-up: one gentle reminder when the client goes quiet.
@@ -242,12 +243,86 @@ export async function runBroadcasts(maxPerRun = 200): Promise<number> {
   return count;
 }
 
+// =====================================================================
+// 3) Interview reminders: N hours before the booked time.
+//    Inside WhatsApp's free 24h window → plain message; otherwise an approved
+//    template (if set) — or the owner is asked to remind manually.
+// =====================================================================
+
+function fill(text: string, v: Record<string, string>) {
+  return text.replace(/\{(name|time|date|place|vacancy)\}/g, (_, k) => v[k] ?? "");
+}
+
+let remindRunning = false;
+export async function runInterviewReminders(): Promise<number> {
+  if (remindRunning || !config.waToken) return 0;
+  remindRunning = true;
+  let sent = 0;
+  try {
+    const s = await getSettings();
+    if (s.business_mode !== "recruiting" || !s.interview_reminder_enabled) return 0;
+    const d = getDb();
+    const due = await d.query<{
+      id: number; wa_id: string; customer_name: string; items: string; delivery: string; interview_at: Date;
+      created_at: Date; contact_name: string | null; last_inbound_at: Date | null; opted_out: boolean;
+    }>(
+      `SELECT o.id, o.wa_id, o.customer_name, o.items, o.delivery, o.interview_at, o.created_at,
+              c.name AS contact_name, c.last_inbound_at, COALESCE(c.opted_out, false) AS opted_out
+       FROM orders o JOIN contacts c ON c.wa_id = o.wa_id
+       WHERE o.status IN ('new','contacted') AND o.reminder_sent_at IS NULL AND o.interview_at IS NOT NULL
+         AND o.interview_at > now() + interval '15 minutes'
+         AND o.interview_at <= now() + ($1::float8 * interval '1 hour')
+       ORDER BY o.interview_at LIMIT 20`,
+      [s.interview_reminder_hours],
+    );
+    const tz = s.timezone || "Asia/Almaty";
+    for (const o of due) {
+      await d.query(`UPDATE orders SET reminder_sent_at = now() WHERE id = $1`, [o.id]);
+      if (o.opted_out) continue;
+      // Booked inside the reminder window (e.g. 2 hours before) — no reminder needed.
+      if (new Date(o.created_at).getTime() > new Date(o.interview_at).getTime() - s.interview_reminder_hours * 3600_000) continue;
+      const at = new Date(o.interview_at);
+      const v = {
+        name: (o.customer_name || o.contact_name || "").trim(),
+        time: new Intl.DateTimeFormat("ru-RU", { timeZone: tz, hour: "2-digit", minute: "2-digit" }).format(at),
+        date: new Intl.DateTimeFormat("ru-RU", { timeZone: tz, day: "2-digit", month: "2-digit" }).format(at),
+        place: o.delivery || "",
+        vacancy: o.items || "",
+      };
+      const windowOpen = o.last_inbound_at && Date.now() - new Date(o.last_inbound_at).getTime() < 23 * 3600_000;
+      try {
+        if (windowOpen) {
+          const text = fill(s.interview_reminder_text, v).replace(/,\s*!/g, "!").replace(/\s{2,}/g, " ").trim();
+          await sendAndStore(o.wa_id, text, "ai");
+          await logEvent("followup", o.wa_id, `Напоминание о собеседовании #${o.id}`);
+          sent++;
+        } else if (s.interview_template_name.trim()) {
+          const name = s.interview_template_name.trim();
+          const id = await wa.sendTemplate(o.wa_id, name, s.interview_template_lang || "kk", [v.name || "кандидат", v.time]);
+          await insertMessage({ wa_message_id: id || null, wa_id: o.wa_id, direction: "out", sender: "system", type: "template", text: `📢 Напоминание о собеседовании (${name}): ${v.date} ${v.time}`, status: "sent" });
+          await logEvent("followup", o.wa_id, `Напоминание-шаблон о собеседовании #${o.id}`);
+          sent++;
+        } else {
+          await logEvent("followup", o.wa_id, `Нельзя напомнить бесплатно: прошло больше 24 ч с сообщения кандидата (собеседование #${o.id})`);
+          await notifyOwner("🔔 Напомните кандидату вручную", `${v.name || "+" + o.wa_id}: собеседование ${v.date} ${v.time}. WhatsApp не разрешает писать первым после 24 часов без шаблона.`, `/#chat/${o.wa_id}`);
+        }
+      } catch (e) {
+        console.warn("[interview-reminder]", o.wa_id, (e as Error).message);
+      }
+    }
+  } finally {
+    remindRunning = false;
+  }
+  return sent;
+}
+
 let timer: NodeJS.Timeout | null = null;
 export function startCampaigns() {
   if (timer) return;
   timer = setInterval(() => {
     runBroadcasts().catch((e) => console.error("[broadcast]", e.message));
     runFollowups().catch((e) => console.error("[followup]", e.message));
+    runInterviewReminders().catch((e) => console.error("[interview-reminder]", e.message));
   }, 60_000);
   timer.unref();
 }

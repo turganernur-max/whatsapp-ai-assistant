@@ -207,6 +207,9 @@ const MIGRATIONS: string[] = [
    WHERE c.needs_attention AND c.paused_until > now()
      AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.wa_id = c.wa_id AND m.sender = 'owner'
                      AND m.created_at > now() - interval '24 hours');`,
+  `ALTER TABLE orders ADD COLUMN IF NOT EXISTS interview_at TIMESTAMPTZ;
+   ALTER TABLE orders ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ;
+   ALTER TABLE orders ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ;`,
 ];
 
 async function migrate(d: Db) {

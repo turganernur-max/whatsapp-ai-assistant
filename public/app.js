@@ -596,6 +596,7 @@
                     hr
                       ? `<div class="o-items">💼 ${esc(o.items)}</div>
                   <div class="row"><b>🗓 ${esc(o.address || "время не указано")}</b></div>
+                  <div class="small">${o.confirmed_at ? "✅ подтвердил, что придёт" : o.reminder_sent_at ? "🔔 напомнили " + fmtTime(o.reminder_sent_at) + " — ждём ответа" : o.interview_at ? "🔔 напомним заранее" : "⚠️ время не распознано — напомните сами"}</div>
                   ${o.city ? `<div class="small">📍 ${esc(o.city)}</div>` : ""}
                   ${o.delivery ? `<div class="small">🏢 ${esc(o.delivery)}</div>` : ""}
                   <div class="small muted">записан ${fmtTime(o.created_at)}</div>`
@@ -1126,6 +1127,14 @@
           <textarea id="screening_questions" placeholder="Как вас зовут? В каком городе живёте? Есть ли опыт работы продавцом? Когда готовы выйти на работу?">${esc(s.screening_questions)}</textarea>
           <label class="field">График собеседований: дни, часы, длительность, адрес или формат</label>
           <textarea id="interview_schedule" placeholder="Пн–Пт с 11:00 до 17:00, каждые 30 минут. Адрес: Алматы, ул. Абая 10, офис 5. С собой: удостоверение личности.">${esc(s.interview_schedule)}</textarea>
+          ${chk("interview_reminder_enabled", "Напоминать кандидату о собеседовании", "AI сам напишет за N часов и спросит, придёт ли. «Иә, келемін» → отметка ✅ в записи")}
+          <label class="field">За сколько часов напоминать</label>
+          <input type="text" inputmode="decimal" id="interview_reminder_hours" value="${s.interview_reminder_hours}">
+          <label class="field">Текст напоминания ({name} — имя, {time} — время, {date} — дата, {place} — адрес)</label>
+          <textarea id="interview_reminder_text" class="short">${esc(s.interview_reminder_text)}</textarea>
+          <label class="field">Шаблон Meta, если с последнего сообщения кандидата прошло больше 24 ч (необязательно, платно). Переменные шаблона: {{1}} — имя, {{2}} — время</label>
+          <input type="text" id="interview_template_name" placeholder="napominanie_sobes" value="${esc(s.interview_template_name)}">
+          <p class="muted small">Без шаблона: если прошло больше 24 часов, AI написать не сможет (правило WhatsApp) — вам придёт уведомление напомнить вручную.</p>
         </div>
         <div id="sales-box" class="${s.business_mode === "sales" ? "" : "hidden"}">
         ${chk("sales_mode", "Режим продаж", "AI выясняет потребность, предлагает из каталога, отвечает на возражения, оформляет заказ и даёт реквизиты для оплаты")}
@@ -1180,6 +1189,10 @@
           vacancies: $("#vacancies").value,
           screening_questions: $("#screening_questions").value,
           interview_schedule: $("#interview_schedule").value,
+          interview_reminder_enabled: $("#interview_reminder_enabled").checked,
+          interview_reminder_hours: Math.min(23, Math.max(1, Number(String($("#interview_reminder_hours").value).replace(",", ".")) || 5)),
+          interview_reminder_text: $("#interview_reminder_text").value,
+          interview_template_name: $("#interview_template_name").value.trim(),
           payment_instructions: $("#payment_instructions").value,
           delivery_info: $("#delivery_info").value,
           disclosure_text: $("#disclosure_text").value,

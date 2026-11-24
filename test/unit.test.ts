@@ -155,3 +155,11 @@ test("humanBubbles splits on blank lines into at most 3 bubbles", async () => {
   assert.deepEqual(humanBubbles("бір жол\nекінші жол"), ["бір жол\nекінші жол"]);
   assert.equal(humanBubbles("a\n\nb\n\nc\n\nd").length, 1, "too many parts → keep as one message");
 });
+
+test("interview time parsing in Almaty time", async () => {
+  const { parseInterviewTime } = await import("../src/sales.js");
+  const at = parseInterviewTime("26.11.2026 11:00", "Asia/Almaty")!;
+  assert.equal(at.toISOString(), "2026-11-26T06:00:00.000Z");
+  assert.equal(parseInterviewTime("26.11 15:30", "Asia/Almaty", new Date("2026-11-24T10:00:00Z"))!.toISOString(), "2026-11-26T10:30:00.000Z");
+  assert.equal(parseInterviewTime("ертең 11-де", "Asia/Almaty"), null);
+});

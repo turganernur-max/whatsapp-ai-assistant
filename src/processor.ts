@@ -7,7 +7,7 @@ import { estimateAudioSeconds, transcribe } from "./stt.js";
 import { notifyOwner } from "./notify.js";
 import * as wa from "./whatsapp.js";
 import { mediaLabel, sendLibraryItem, sendOneOffFile } from "./media.js";
-import { aiSalesContext, paymentClaimed, saveOrder } from "./sales.js";
+import { aiSalesContext, interviewConfirmed, paymentClaimed, saveOrder } from "./sales.js";
 import {
   getContact,
   getKnowledge,
@@ -385,6 +385,13 @@ export async function processContact(waId: string): Promise<void> {
       await saveOrder(waId, decision.order);
     } catch (e) {
       console.error("[order]", (e as Error).message);
+    }
+  }
+  if (decision.interviewConfirmed) {
+    try {
+      await interviewConfirmed(waId);
+    } catch (e) {
+      console.error("[interview]", (e as Error).message);
     }
   }
   if (decision.paymentClaimed) {

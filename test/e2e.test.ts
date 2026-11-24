@@ -956,3 +956,45 @@ test("'persistent for everyone' reminds chats left on the default mode", async (
   await getDb().query(`UPDATE messages SET created_at = now() - interval '3 hours' WHERE wa_id = '77010000110' AND sender = 'ai'`);
   assert.equal(await runFollowups(), 0, "switched off");
 });
+
+test("interview reminder N hours before; 'yes' marks the interview confirmed; >24h without template → owner asked", async () => {
+  const { runInterviewReminders } = await import("../src/campaigns.js");
+  await updateSettings({ business_mode: "recruiting", interview_reminder_enabled: true, interview_reminder_hours: 5, timezone: "Asia/Almaty", vacancies: "x", interview_schedule: "y" });
+  const fmt = (d: Date) => {
+    const p = new Intl.DateTimeFormat("ru-RU", { timeZone: "Asia/Almaty", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(d);
+    return p.replace(",", "");
+  };
+  const at = new Date(Date.now() + 4 * 3600_000); // interview in 4 hours
+  const order = { confirmed: true, items: "Сату менеджері", total: 0, customer_name: "Жантөре", city: "Алматы", address: fmt(at), delivery: "«Аманат» БЦ, 2-қабат", comment: "" };
+  nextReply = { reply: "Жазып қойдым ✅", handoff: false, handoff_reason: "", send_media: [], order, payment_claimed: false, interview_confirmed: false };
+  await postWebhook(inbound("77010000120", "Иә"));
+  await drain();
+  const [o] = await getDb().query(`SELECT * FROM orders WHERE wa_id = '77010000120'`);
+  assert.ok(o.interview_at, "time parsed");
+  // pretend it was booked yesterday
+  await getDb().query(`UPDATE orders SET created_at = now() - interval '20 hours' WHERE id = $1`, [o.id]);
+  const before = sent.length;
+  assert.equal(await runInterviewReminders(), 1);
+  assert.match(sent.at(-1).text.body, /Жантөре! Бүгін \d\d:\d\d-да собеседование/);
+  assert.match(sent.at(-1).text.body, /Аманат/);
+  assert.equal(await runInterviewReminders(), 0, "only once");
+  assert.equal(sent.length, before + 1);
+
+  nextReply = { reply: "Рахмет, күтеміз! 😊", handoff: false, handoff_reason: "", send_media: [], order: { ...order, confirmed: false }, payment_claimed: false, interview_confirmed: true };
+  await postWebhook(inbound("77010000120", "Иә, келемін"));
+  await drain();
+  const [o2] = await getDb().query(`SELECT status, confirmed_at FROM orders WHERE id = $1`, [o.id]);
+  assert.ok(o2.confirmed_at);
+  assert.equal(o2.status, "contacted");
+
+  // candidate silent for >24h and no template → nothing sent, owner notified via event
+  const at2 = new Date(Date.now() + 3 * 3600_000);
+  await getDb().query(`INSERT INTO contacts (wa_id, name, last_inbound_at) VALUES ('77010000121', 'Old', now() - interval '30 hours')`);
+  await getDb().query(`INSERT INTO orders (wa_id, items, address, interview_at, created_at) VALUES ('77010000121', 'Сату менеджері', 'x', $1, now() - interval '30 hours')`, [at2]);
+  const n = sent.length;
+  await runInterviewReminders();
+  assert.equal(sent.length, n, "no free-form message outside the 24h window");
+  const ev = await getDb().query(`SELECT detail FROM events WHERE wa_id = '77010000121'`);
+  assert.match(ev.at(-1).detail, /больше 24 ч/);
+  await updateSettings({ business_mode: "sales" });
+});
