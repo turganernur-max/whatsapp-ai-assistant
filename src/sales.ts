@@ -9,11 +9,17 @@ import type { MediaOption } from "./ai.js";
 /** Everything the AI needs to sell: the catalog plus the files it may send (library + product photos). */
 /** Interview times already booked (open, not cancelled) — the AI must not offer them again. */
 export async function busyInterviewSlots(): Promise<string[]> {
-  const rows = await getDb().query<{ address: string; items: string }>(
-    `SELECT address, items FROM orders WHERE status NOT IN ('cancelled','done') AND address <> ''
-       AND created_at > now() - interval '60 days' ORDER BY id DESC LIMIT 200`,
+  // Group bookings by time: a slot is full only when it holds `interview_slot_capacity` people
+  // (group interviews). Upcoming bookings only.
+  const cap = Math.max(1, (await getSettings()).interview_slot_capacity || 1);
+  const rows = await getDb().query<{ slot: string; n: number }>(
+    `SELECT address AS slot, COUNT(*)::int AS n FROM orders
+     WHERE status NOT IN ('cancelled','done') AND address <> ''
+       AND (interview_at IS NULL OR interview_at > now() - interval '1 hour')
+       AND created_at > now() - interval '60 days'
+     GROUP BY address ORDER BY MIN(id) DESC LIMIT 200`,
   );
-  return rows.map((r) => `${r.address}${r.items ? " (" + r.items + ")" : ""}`);
+  return rows.filter((r) => r.n >= cap).map((r) => (cap > 1 ? `${r.slot} (мест нет: ${r.n}/${cap})` : r.slot));
 }
 
 export async function aiSalesContext(): Promise<{ catalog: CatalogItem[]; media: MediaOption[]; busySlots: string[] }> {

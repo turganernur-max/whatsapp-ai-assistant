@@ -1127,6 +1127,8 @@
           <textarea id="screening_questions" placeholder="Как вас зовут? В каком городе живёте? Есть ли опыт работы продавцом? Когда готовы выйти на работу?">${esc(s.screening_questions)}</textarea>
           <label class="field">График собеседований: дни, часы, длительность, адрес или формат</label>
           <textarea id="interview_schedule" placeholder="Пн–Пт с 11:00 до 17:00, каждые 30 минут. Адрес: Алматы, ул. Абая 10, офис 5. С собой: удостоверение личности.">${esc(s.interview_schedule)}</textarea>
+          <label class="field">Сколько кандидатов можно записать на одно время (групповое собеседование)</label>
+          <input type="text" inputmode="numeric" id="interview_slot_capacity" value="${s.interview_slot_capacity || 1}">
           ${chk("interview_reminder_enabled", "Напоминать кандидату о собеседовании", "AI сам напишет за N часов и спросит, придёт ли. «Иә, келемін» → отметка ✅ в записи")}
           <label class="field">За сколько часов напоминать</label>
           <input type="text" inputmode="decimal" id="interview_reminder_hours" value="${s.interview_reminder_hours}">
@@ -1189,6 +1191,7 @@
           vacancies: $("#vacancies").value,
           screening_questions: $("#screening_questions").value,
           interview_schedule: $("#interview_schedule").value,
+          interview_slot_capacity: Math.min(100, Math.max(1, parseInt($("#interview_slot_capacity").value, 10) || 1)),
           interview_reminder_enabled: $("#interview_reminder_enabled").checked,
           interview_reminder_hours: Math.min(23, Math.max(1, Number(String($("#interview_reminder_hours").value).replace(",", ".")) || 5)),
           interview_reminder_text: $("#interview_reminder_text").value,

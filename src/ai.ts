@@ -230,7 +230,7 @@ export function buildSystem(
     system.push({
       type: "text",
       text:
-        "ЗАНЯТО (на это время уже записаны другие кандидаты — не предлагай его):\n" +
+        `ЗАНЯТО (на это время мест нет — не предлагай его; на одно время можно записать до ${Math.max(1, s.interview_slot_capacity || 1)} чел.):\n` +
         (busySlots.length ? busySlots.map((b) => `- ${b}`).join("\n") : "(пока свободно всё время из графика)"),
     });
   }

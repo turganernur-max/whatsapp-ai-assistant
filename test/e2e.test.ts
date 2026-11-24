@@ -945,7 +945,7 @@ test("recruiting mode: vacancy rules in prompt, booked slots excluded, interview
   await postWebhook(inbound("77010000102", "Вакансия бар ма?"));
   await drain();
   const busy = claudeCalls.at(-1).system.map((b: any) => b.text).join("\n");
-  assert.match(busy, /ЗАНЯТО[\s\S]*26\.11\.2026 11:00 \(Продавец-консультант\)/);
+  assert.match(busy, /ЗАНЯТО[\s\S]*- 26\.11\.2026 11:00/);
   const h = await login();
   const ov = (await app.inject({ url: "/api/overview", headers: h })).json();
   assert.equal(ov.business_mode, "recruiting");
@@ -1062,4 +1062,15 @@ test("messages arriving before the history is read are answered in the same repl
   await drain();
   assert.equal(claudeCalls.length, 1);
   assert.equal(sent.length, 1);
+});
+
+test("group interviews: a time is offered until it holds the configured number of candidates", async () => {
+  const { busyInterviewSlots } = await import("../src/sales.js");
+  await updateSettings({ business_mode: "recruiting", interview_slot_capacity: 3 });
+  await getDb().query(`INSERT INTO contacts (wa_id) VALUES ('77010000150'),('77010000151'),('77010000152')`);
+  await getDb().query(`INSERT INTO orders (wa_id, items, address) VALUES ('77010000150','M','27.11.2026 11:00'),('77010000151','M','27.11.2026 11:00')`);
+  assert.deepEqual(await busyInterviewSlots(), [], "2 of 3 seats taken — still free");
+  await getDb().query(`INSERT INTO orders (wa_id, items, address) VALUES ('77010000152','M','27.11.2026 11:00')`);
+  assert.deepEqual(await busyInterviewSlots(), ["27.11.2026 11:00 (мест нет: 3/3)"]);
+  await updateSettings({ interview_slot_capacity: 1, business_mode: "sales" });
 });

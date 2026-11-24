@@ -45,6 +45,7 @@ export const SettingsSchema = z.object({
   vacancies: z.string().max(20_000),
   interview_schedule: z.string().max(5000),
   screening_questions: z.string().max(5000),
+  interview_slot_capacity: z.number().int().min(1).max(100),
   interview_reminder_enabled: z.boolean(),
   interview_reminder_hours: z.number().min(1).max(23),
   interview_reminder_text: z.string().max(1000),
@@ -100,6 +101,7 @@ export const DEFAULT_SETTINGS: Settings = {
   vacancies: "",
   interview_schedule: "",
   screening_questions: "",
+  interview_slot_capacity: 1,
   interview_reminder_enabled: true,
   interview_reminder_hours: 5,
   interview_reminder_text:
